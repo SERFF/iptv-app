@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">IPTV</string>
+
+    <string name="nav_channels">Kanalen</string>
+    <string name="nav_settings">Instellingen</string>
+
+    <string name="settings_title">Bron instellen</string>
+    <string name="settings_source_type">Brontype</string>
+    <string name="settings_source_m3u">M3U</string>
+    <string name="settings_source_xtream">Xtream</string>
+    <string name="settings_m3u_url">M3U URL</string>
+    <string name="settings_xtream_host">Host (bv. http://example.com:8080)</string>
+    <string name="settings_xtream_user">Gebruikersnaam</string>
+    <string name="settings_xtream_pass">Wachtwoord</string>
+    <string name="settings_save">Opslaan</string>
+    <string name="settings_saved">Opgeslagen</string>
+
+    <string name="wizard_welcome_title">Welkom</string>
+    <string name="wizard_welcome_body">Een lichte IPTV-speler voor je Formuler Z10 Pro Max. In drie stappen klaar om te kijken.</string>
+    <string name="wizard_configure">Bron instellen</string>
+    <string name="wizard_step1_title">Je bron</string>
+    <string name="wizard_step1_body">Kies M3U (één URL) of Xtream (host, gebruiker, wachtwoord) van je provider.</string>
+    <string name="wizard_step2_title">Eenmalig invullen</string>
+    <string name="wizard_step2_body">De app onthoudt je gegevens en ververst de catalogus automatisch.</string>
+    <string name="wizard_step3_title">Kijken</string>
+    <string name="wizard_step3_body">TV, films en series in één lijst, volledig met de afstandsbediening bedienbaar.</string>
+    <string name="wizard_keyboard_hint">Tip: een USB-toetsenbord scheelt veel getik op de afstandsbediening bij het invoeren van je bron.</string>
+
+    <string name="channels_loading">Kanalen laden…</string>
+    <string name="channels_empty">Geen kanalen gevonden.</string>
+    <string name="channels_refresh">Vernieuwen</string>
+    <string name="channels_open_settings">Instellingen openen</string>
+    <string name="channels_all_categories">Alle</string>
+    <string name="channels_play">Afspelen</string>
+    <string name="channels_last_watched">Laatst bekeken</string>
+    <string name="channels_settings_hint">Instellingen</string>
+
+    <string name="tab_tv">Televisie</string>
+    <string name="tab_movies">Films</string>
+    <string name="tab_series">Series</string>
+    <string name="channels_empty_type_tv">Geen zenders.</string>
+    <string name="channels_empty_type_movies">Geen films beschikbaar bij deze bron.</string>
+    <string name="channels_empty_type_series">Geen series beschikbaar bij deze bron.</string>
+    <string name="channels_series_not_playable">Afleveringen komen in een volgende stap.</string>
+
+    <string name="favorites_empty_title">Nog geen favorieten</string>
+    <string name="favorites_empty_body">Selecteer de kanalen die je vaak kijkt.</string>
+    <string name="favorites_manage">Kanalen beheren</string>
+    <string name="favorites_done">Klaar</string>
+    <string name="favorites_hint_add">OK = toevoegen of verwijderen</string>
+    <string name="favorites_marker">★</string>
+    <string name="favorites_all_categories">Alle</string>
+
+    <string name="search_placeholder">Zoeken…</string>
+    <string name="search_empty">Niks gevonden voor \"%1$s\".</string>
+    <string name="search_clear">Wissen</string>
+
+    <string name="detail_play">Afspelen</string>
+    <string name="detail_resume">Hervatten</string>
+    <string name="detail_resume_hint">vanaf %1$s</string>
+    <string name="detail_add_to_list">Toevoegen aan mijn lijst</string>
+    <string name="detail_remove_from_list">Verwijderen uit mijn lijst</string>
+    <string name="detail_loading">Laden…</string>
+    <string name="detail_not_found">Film niet gevonden.</string>
+    <string name="detail_back">Terug</string>
+
+    <string name="rail_my_list">Mijn lijst</string>
+    <string name="rail_continue_watching">Verder kijken</string>
+    <string name="rail_popular_now">Populair nu</string>
+    <string name="tmdb_attribution">Populariteit via TMDB</string>
+
+    <string name="series_season_prefix">S%1$d</string>
+    <string name="series_episode_prefix">E%1$d</string>
+    <string name="series_no_episodes">Deze serie heeft geen afspeelbare afleveringen.</string>
+    <string name="series_load_failed">Serie-info laden mislukt</string>
+
+    <string name="player_error_skipping">"%1$s" speelt niet — volgende…</string>
+
+    <string name="status_refreshing">Vernieuwen…</string>
+    <string name="status_ok">Bijgewerkt %1$s</string>
+    <string name="status_stale">Verouderd (%1$s)</string>
+    <string name="status_error">Vernieuwen mislukt</string>
+    <string name="status_never">Nog niet bijgewerkt</string>
+    <string name="duration_just_now">zojuist</string>
+    <string name="duration_minutes_ago">%1$d min</string>
+    <string name="duration_hours_ago">%1$d u</string>
+    <string name="duration_days_ago">%1$d d</string>
+
+    <string name="epg_now_prefix">Nu: %1$s</string>
+    <string name="hero_now_on_prefix">NU OP · %1$s</string>
+    <string name="hero_view_series">Bekijken</string>
+
+    <string name="error_generic">Er ging iets mis.</string>
+    <string name="error_retry">Opnieuw proberen</string>
+    <string name="error_no_source">Geen bron geconfigureerd.</string>
+
+    <string name="detail_resume_remaining">%1$s resterend</string>
+    <string name="status_refreshing_count">Vernieuwen… %1$d</string>
+
+    <string name="keyhint_ok_play">OK Afspelen</string>
+    <string name="keyhint_menu_favorites">MENU Favorieten</string>
+    <string name="keyhint_search">▶ Zoeken</string>
+    <string name="keyhint_settings">⋮ Instellingen</string>
+    <string name="keyhint_back_exit">BACK Terug</string>
+    <string name="keyhint_info_channel">INFO Kanaalinfo</string>
+    <string name="keyhint_num_channel">0-9 Kanaalnummer</string>
+    <string name="keyhint_updown_channel">▲▼ Zenders</string>
+    <string name="keyhint_ok_pause">OK Pauze</string>
+    <string name="keyhint_green_tracks">GROEN Audio/Ondertitels</string>
+    <string name="keyhint_yellow_info">GEEL Info</string>
+    <string name="keyhint_blue_stats">BLAUW Stats</string>
+
+    <string name="search_recent">Recent</string>
+    <string name="search_voice">Spreek om te zoeken</string>
+    <string name="search_voice_unsupported">Spraakherkenning niet beschikbaar.</string>
+    <string name="search_clear_recent">Recente wissen</string>
+
+    <string name="icon_desc_search">Zoeken</string>
+    <string name="icon_desc_play">Afspelen</string>
+    <string name="icon_desc_back">Terug</string>
+    <string name="icon_desc_bookmark_add">Toevoegen aan mijn lijst</string>
+    <string name="icon_desc_bookmark_remove">Verwijderen uit mijn lijst</string>
+    <string name="icon_desc_voice">Spreek om te zoeken</string>
+    <string name="icon_desc_settings">Instellingen</string>
+
+    <string name="player_no_stream">Stream niet beschikbaar.</string>
+    <string name="player_error_title">Kan deze stream niet afspelen</string>
+    <string name="player_error_retry">Opnieuw proberen</string>
+    <string name="player_error_next">Volgende</string>
+    <string name="player_error_exit">Terug</string>
+
+    <string name="player_audio_title">Audio</string>
+    <string name="player_audio_empty">Geen audiosporen gevonden</string>
+    <string name="player_subtitle_title">Ondertitels</string>
+    <string name="player_subtitle_off">Uit</string>
+    <string name="player_subtitle_empty">Geen ondertitels in deze stream</string>
+    <string name="player_subtitle_delay">Ondertitel vertraging</string>
+    <string name="player_subtitle_delay_hint">◀ ▶ in stappen van 0,1 s (0 – 10 s)</string>
+    <string name="player_panel_hint">▲ OMHOOG of MENU opent dit paneel</string>
+    <string name="player_panel_hint_nav">▲▼ Kiezen · OK Bevestigen</string>
+    <string name="player_panel_hint_back">BACK Sluiten</string>
+    <string name="player_banner_now">Nu: %1$s</string>
+    <string name="player_banner_next">Straks: %1$s</string>
+    <string name="player_aspect_title">Beeldverhouding</string>
+    <string name="player_aspect_fit">Passend</string>
+    <string name="player_aspect_fill">Vullen</string>
+    <string name="player_aspect_zoom">Zoomen</string>
+
+    <string name="player_stats_title">Stream-info</string>
+    <string name="player_stats_resolution">Resolutie: %1$s</string>
+    <string name="player_stats_bitrate">Bitrate: %1$s</string>
+    <string name="player_stats_codec">Codec: %1$s</string>
+    <string name="player_stats_buffer">Buffer: %1$s</string>
+    <string name="player_stats_dropped">Dropped frames: %1$d</string>
+
+    <string name="player_ch_input">Kanaal: %1$s</string>
+    <string name="player_ch_input_hint">Druk OK om te gaan</string>
+
+    <string name="rail_all_channels">Alle zenders</string>
+    <string name="rail_categories">Per categorie</string>
+    <string name="rail_related">Meer in %1$s</string>
+
+    <string name="episode_watched">✓ Bekeken</string>
+
+    <string name="settings_refresh_title">Catalogus vernieuwen</string>
+    <string name="settings_refresh_body">Haal kanalen, films en series opnieuw op bij je bron.</string>
+    <string name="settings_refresh_now">Nu vernieuwen</string>
+
+    <string name="settings_auto_refresh_title">Automatisch vernieuwen</string>
+    <string name="settings_auto_refresh_body">Werk de catalogus elke nacht automatisch bij terwijl je slaapt.</string>
+    <string name="settings_auto_refresh_on">Aan</string>
+    <string name="settings_auto_refresh_off">Uit</string>
+    <string name="settings_auto_refresh_hour">Tijdstip: %1$02d:00</string>
+    <string name="settings_auto_refresh_hour_prev">− 1 uur</string>
+    <string name="settings_auto_refresh_hour_next">+ 1 uur</string>
+
+    <string name="profiles_title">Profielen</string>
+    <string name="profiles_body">Iedere gebruiker heeft een eigen lijst, favorieten en voortgang.</string>
+    <string name="profiles_manage">Profielen beheren</string>
+    <string name="profiles_add">Profiel toevoegen</string>
+    <string name="profiles_rename">Bewerken</string>
+    <string name="profiles_delete">Verwijderen</string>
+    <string name="profiles_active">Actief</string>
+    <string name="profiles_name_label">Naam</string>
+    <string name="profiles_color_label">Kleur</string>
+    <string name="profiles_default_new_name">Profiel %1$d</string>
+    <string name="profiles_select">Selecteren</string>
+
+    <string name="splash_loading">OPSTARTEN…</string>
+</resources>

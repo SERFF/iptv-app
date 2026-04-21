@@ -1,0 +1,10 @@
+# Copy this file to `local.properties` and fill in your own values.
+# `local.properties` is git-ignored so your secrets stay local.
+
+# Path to your Android SDK. Gradle needs this.
+sdk.dir=/path/to/your/Android/sdk
+
+# TMDB v4 read-access bearer token. Leave empty to disable the TMDB integration
+# (the app keeps working, the trending/popular sections just stay empty).
+# Get one at https://www.themoviedb.org/settings/api
+TMDB_BEARER_TOKEN=
