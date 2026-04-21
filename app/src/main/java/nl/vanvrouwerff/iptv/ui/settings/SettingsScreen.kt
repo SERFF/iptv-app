@@ -208,6 +208,38 @@ fun SettingsScreen(
                     )
                 }
             }
+
+            Spacer(Modifier.height(16.dp))
+
+            // About + required attributions. The TMDB disclaimer wording is dictated
+            // by their API terms of use — any screen that surfaces TMDB content needs
+            // it, and Settings is the place a reviewer (or curious user) looks first.
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.about_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    stringResource(R.string.about_open_source),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IptvPalette.TextSecondary,
+                )
+                Text(
+                    stringResource(R.string.about_tmdb_credit),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IptvPalette.TextSecondary,
+                )
+                Text(
+                    stringResource(R.string.about_tmdb_disclaimer),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IptvPalette.TextSecondary,
+                )
+                Text(
+                    stringResource(R.string.about_formuler_disclaimer),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IptvPalette.TextSecondary,
+                )
+            }
         }
     }
 }

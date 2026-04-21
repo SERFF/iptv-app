@@ -188,4 +188,11 @@
     <string name="profiles_select">Selecteren</string>
 
     <string name="splash_loading">OPSTARTEN…</string>
+
+    <string name="about_title">Over deze app</string>
+    <string name="about_open_source">Open-source onder de Apache License 2.0.</string>
+    <string name="about_tmdb_credit">Film- en seriegegevens komen van The Movie Database (TMDB).</string>
+    <!-- Exact wording required by TMDB's API terms of use. Do not translate. -->
+    <string name="about_tmdb_disclaimer" translatable="false">This product uses the TMDB API but is not endorsed or certified by TMDB.</string>
+    <string name="about_formuler_disclaimer">Niet geaffilieerd met Formuler. &quot;Formuler&quot; en &quot;Z10 Pro Max&quot; zijn handelsmerken van hun respectieve eigenaren.</string>
 </resources>
