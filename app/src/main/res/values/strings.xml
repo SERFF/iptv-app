@@ -162,6 +162,15 @@
     <string name="rail_related">Meer in %1$s</string>
 
     <string name="episode_watched">✓ Bekeken</string>
+    <string name="episode_airdate">Uitgezonden %1$s</string>
+    <string name="season_progress">%1$d van %2$d bekeken</string>
+
+    <string name="rail_top_ten">Top 10 deze week</string>
+
+    <string name="player_next_episode_title">Volgende aflevering</string>
+    <string name="player_next_episode_in">Over %1$ds</string>
+    <string name="player_next_episode_now">Nu afspelen</string>
+    <string name="player_next_episode_cancel">Annuleren</string>
 
     <string name="settings_refresh_title">Catalogus vernieuwen</string>
     <string name="settings_refresh_body">Haal kanalen, films en series opnieuw op bij je bron.</string>

@@ -97,6 +97,19 @@ interface ChannelDao {
     @Query("SELECT * FROM watch_progress WHERE profileId = :profileId AND channelId = :id LIMIT 1")
     fun observeProgress(profileId: String, id: String): Flow<WatchProgressEntity?>
 
+    /**
+     * Progress rows for a specific set of channel / episode IDs. Used by the series detail
+     * screen to compute per-season "X of Y bekeken" badges without polling every episode
+     * row individually.
+     */
+    @Query(
+        "SELECT * FROM watch_progress WHERE profileId = :profileId AND channelId IN (:ids)",
+    )
+    fun observeProgressForIds(
+        profileId: String,
+        ids: List<String>,
+    ): Flow<List<WatchProgressEntity>>
+
     @Query("SELECT * FROM watch_progress WHERE profileId = :profileId AND channelId = :id LIMIT 1")
     suspend fun getProgress(profileId: String, id: String): WatchProgressEntity?
 

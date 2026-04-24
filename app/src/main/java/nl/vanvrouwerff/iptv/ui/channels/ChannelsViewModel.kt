@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import nl.vanvrouwerff.iptv.IptvApp
 import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
@@ -31,8 +32,7 @@ import nl.vanvrouwerff.iptv.data.db.WatchedEpisodeEntity
 import nl.vanvrouwerff.iptv.data.db.toDomain
 import nl.vanvrouwerff.iptv.data.tmdb.MovieMatcher
 import nl.vanvrouwerff.iptv.data.tmdb.SeriesMatcher
-import nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieItem
-import nl.vanvrouwerff.iptv.data.tmdb.TmdbTvItem
+import nl.vanvrouwerff.iptv.data.tmdb.TmdbPopularRepository
 
 data class Rail(
     val title: String,
@@ -103,6 +103,13 @@ data class ChannelsUiState(
     /** TV channels the user has starred, in catalogue order. Only meaningful on the TV tab. */
     val favoriteChannels: List<Channel> = emptyList(),
     val hero: Channel? = null,
+    /**
+     * Featured rotation for the hero banner. Netflix-style: the first slot is the user's
+     * last-watched item (when present), the rest are drawn from the Populair-nu rail and
+     * the first items of the main category rails. Capped so the carousel stays short
+     * enough that every slot gets meaningful screen time.
+     */
+    val heroes: List<Channel> = emptyList(),
     val rails: List<Rail> = emptyList(),
     /** Display name of the currently active profile, or null while we're still resolving it. */
     val activeProfileName: String? = null,
@@ -149,6 +156,62 @@ private object ChannelsDerivations {
         return if (selectedType == ContentType.SERIES) channels.firstOrNull()
         else channels.firstOrNull { it.streamUrl != null }
     }
+
+    /**
+     * Up to [HERO_CAROUSEL_MAX] featured titles for the rotating hero banner. Dedup by id,
+     * prefer posters with artwork (logoUrl) so the carousel has visual weight on each slot.
+     * Order: last-watched first, then popular rail, then the first representative card from
+     * each category. Live-TV tab keeps the single-item behaviour (no carousel) because live
+     * channel logos don't carry the kind of hero-quality artwork posters do.
+     */
+    fun heroes(
+        selectedType: ContentType,
+        channels: List<Channel>,
+        lastWatchedId: String?,
+        popularMovies: List<Channel>,
+        popularSeries: List<Channel>,
+        continueWatching: List<Channel>,
+    ): List<Channel> {
+        if (channels.isEmpty()) return emptyList()
+        if (selectedType == ContentType.TV) {
+            return listOfNotNull(hero(selectedType, channels, lastWatchedId))
+        }
+        val seen = HashSet<String>()
+        val out = mutableListOf<Channel>()
+        fun tryAdd(ch: Channel?) {
+            if (ch == null) return
+            if (out.size >= HERO_CAROUSEL_MAX) return
+            if (!seen.add(ch.id)) return
+            // Hero banner relies on a backdrop image — drop anything without one so the
+            // carousel never rotates into a flat gradient slot mid-cycle.
+            if (ch.logoUrl.isNullOrBlank()) return
+            out.add(ch)
+        }
+        // 1. Last-watched (if it's in this tab's channel list).
+        if (lastWatchedId != null) {
+            tryAdd(channels.firstOrNull { it.id == lastWatchedId })
+        }
+        // 2. Most recently started item in this tab.
+        continueWatching.firstOrNull { it.type == selectedType }?.let(::tryAdd)
+        // 3. Top of the populair-nu rail for this tab.
+        val popular = when (selectedType) {
+            ContentType.MOVIE -> popularMovies
+            ContentType.SERIES -> popularSeries
+            else -> emptyList()
+        }
+        popular.take(3).forEach(::tryAdd)
+        // 4. Representative first item from a diverse set of categories. `distinctBy`
+        //    groupTitle keeps the carousel visually varied.
+        channels.asSequence()
+            .filter { !it.logoUrl.isNullOrBlank() }
+            .distinctBy { it.groupTitle }
+            .take(HERO_CAROUSEL_MAX)
+            .forEach(::tryAdd)
+        if (out.isEmpty()) hero(selectedType, channels, lastWatchedId)?.let(::tryAdd)
+        return out
+    }
+
+    const val HERO_CAROUSEL_MAX: Int = 5
 
     fun rails(
         selectedType: ContentType,
@@ -215,10 +278,6 @@ class ChannelsViewModel : ViewModel() {
     private val selectedTypeFlow = MutableStateFlow(ContentType.TV)
     private val searchQueryFlow = MutableStateFlow("")
     private val activeProfileIdFlow = app.activeProfileId
-    /** TMDB popular TV result, fetched once per cache TTL via the repository. */
-    private val tmdbPopularFlow = MutableStateFlow<List<TmdbTvItem>>(emptyList())
-    /** TMDB popular movies result, fetched once per cache TTL via the repository. */
-    private val tmdbPopularMoviesFlow = MutableStateFlow<List<TmdbMovieItem>>(emptyList())
 
     // Keep one hot StateFlow per content type so tab switches are instant after the first
     // load. `flatMapLatest` on selectedType would otherwise cancel the previous query and
@@ -366,53 +425,26 @@ class ChannelsViewModel : ViewModel() {
             }
             .launchIn(viewModelScope)
 
-        // TMDB popular lists (once each; repository handles 24h caching). No-op if the token
-        // isn't configured. TV and movies are independent endpoints; fetch in parallel so a
-        // slow TMDB response on one doesn't block the other tab's rail from populating.
-        viewModelScope.launch {
-            tmdbPopularFlow.value = runCatching { app.tmdbPopular.getPopularTv() }
-                .getOrDefault(emptyList())
-        }
-        viewModelScope.launch {
-            tmdbPopularMoviesFlow.value = runCatching { app.tmdbPopular.getPopularMovies() }
-                .getOrDefault(emptyList())
-        }
-
-        // "Populair nu" rail: match TMDB's popular series against the user's Series
-        // catalogue. Runs off-main because title normalization over 32k entries isn't
-        // free. Re-matches whenever the Series tab's channels or the TMDB result change.
-        combine(
-            selectedTypeFlow,
-            _state.map { it.channels }.distinctUntilChanged(),
-            tmdbPopularFlow,
-        ) { type, channels, tmdb ->
-            if (type == ContentType.SERIES && tmdb.isNotEmpty()) {
-                SeriesMatcher.match(tmdb, channels)
-            } else {
-                emptyList()
-            }
-        }
-            .distinctUntilChanged()
-            .flowOn(Dispatchers.Default)
-            .onEach { matched -> _state.update { it.copy(popularSeries = matched) } }
-            .launchIn(viewModelScope)
-
-        // Mirror of the above for the Movies tab.
-        combine(
-            selectedTypeFlow,
-            _state.map { it.channels }.distinctUntilChanged(),
-            tmdbPopularMoviesFlow,
-        ) { type, channels, tmdb ->
-            if (type == ContentType.MOVIE && tmdb.isNotEmpty()) {
-                MovieMatcher.match(tmdb, channels)
-            } else {
-                emptyList()
-            }
-        }
-            .distinctUntilChanged()
-            .flowOn(Dispatchers.Default)
-            .onEach { matched -> _state.update { it.copy(popularMovies = matched) } }
-            .launchIn(viewModelScope)
+        // "Populair nu" rails (Movies + Series). Two layers of caching:
+        //  1. The matched-IDs cache (24h) lets the rail render at cold start as soon as the
+        //     catalogue Flow emits — no waiting on TMDB or 32k-row title normalisation.
+        //  2. If the cache is stale/missing, we fetch TMDB and re-run matching in the
+        //     background, then overwrite the cache and re-emit. Fresh users still get the
+        //     rail on first launch, just after the usual one-time match.
+        setupPopularRail(
+            type = ContentType.MOVIE,
+            cacheKey = TmdbPopularRepository.KEY_MATCHED_POPULAR_MOVIES,
+            fetchTmdb = { app.tmdbPopular.getPopularMovies() },
+            match = { tmdb, chans -> MovieMatcher.match(tmdb, chans) },
+            emit = { list -> _state.update { it.copy(popularMovies = list) } },
+        )
+        setupPopularRail(
+            type = ContentType.SERIES,
+            cacheKey = TmdbPopularRepository.KEY_MATCHED_POPULAR_SERIES,
+            fetchTmdb = { app.tmdbPopular.getPopularTv() },
+            match = { tmdb, chans -> SeriesMatcher.match(tmdb, chans) },
+            emit = { list -> _state.update { it.copy(popularSeries = list) } },
+        )
 
         // Derived view fields (rails, hero, favoriteChannels, playableChannels). Computed
         // off-main once per input change, NOT per recompose. Crucially, the EPG ticker
@@ -441,6 +473,14 @@ class ChannelsViewModel : ViewModel() {
                     hero = ChannelsDerivations.hero(
                         inputs.selectedType, inputs.channels, inputs.lastWatchedId,
                     ),
+                    heroes = ChannelsDerivations.heroes(
+                        inputs.selectedType,
+                        inputs.channels,
+                        inputs.lastWatchedId,
+                        inputs.popularMovies,
+                        inputs.popularSeries,
+                        inputs.continueWatching,
+                    ),
                     rails = ChannelsDerivations.rails(
                         inputs.selectedType,
                         inputs.channels,
@@ -459,6 +499,7 @@ class ChannelsViewModel : ViewModel() {
                         playableChannels = d.playable,
                         favoriteChannels = d.favorites,
                         hero = d.hero,
+                        heroes = d.heroes,
                         rails = d.rails,
                     )
                 }
@@ -548,6 +589,56 @@ class ChannelsViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Sets up a cache-first "Populair nu" rail. The matched channel IDs are the source of
+     * truth: seeded from the 24h cache on launch (so the rail appears the instant Room
+     * emits channels), then refreshed in the background when stale. Each refresh overwrites
+     * the IDs Flow, which fans out through the hydration combine below and re-emits the
+     * latest order/contents.
+     */
+    private fun <T> setupPopularRail(
+        type: ContentType,
+        cacheKey: String,
+        fetchTmdb: suspend () -> List<T>,
+        match: (List<T>, List<Channel>) -> List<Channel>,
+        emit: (List<Channel>) -> Unit,
+    ) {
+        val idsFlow = MutableStateFlow<List<String>>(emptyList())
+
+        // Hydrate cached/fresh IDs against the currently-loaded catalogue. Missing IDs are
+        // silently dropped (e.g. after a source change renamed or removed the entry).
+        combine(idsFlow, channelsByType.getValue(type)) { ids, channels ->
+            if (ids.isEmpty() || channels.isEmpty()) emptyList()
+            else {
+                val byId = channels.associateBy { it.id }
+                ids.mapNotNull { byId[it] }
+            }
+        }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
+            .onEach(emit)
+            .launchIn(viewModelScope)
+
+        viewModelScope.launch {
+            val cached = runCatching { app.tmdbPopular.readMatchedIds(cacheKey) }.getOrNull()
+            if (cached != null && cached.ids.isNotEmpty()) {
+                // Paint the rail from yesterday's result immediately — even if stale, a
+                // stale rail beats a blank one while we decide whether to refresh.
+                idsFlow.value = cached.ids
+            }
+            if (cached != null && app.tmdbPopular.isFresh(cached)) return@launch
+
+            // Stale or missing: wait for the catalogue to populate, then do the real work.
+            val channels = channelsByType.getValue(type).first { it.isNotEmpty() }
+            val tmdb = runCatching { fetchTmdb() }.getOrElse { return@launch }
+            if (tmdb.isEmpty()) return@launch
+            val matched = withContext(Dispatchers.Default) { match(tmdb, channels) }
+            val newIds = matched.map { it.id }
+            runCatching { app.tmdbPopular.writeMatchedIds(cacheKey, newIds) }
+            idsFlow.value = newIds
+        }
+    }
+
     private fun limitFor(type: ContentType): Int = when (type) {
         // TV needs to cover favorites management, so give it headroom over the usual ~26k.
         ContentType.TV -> 40000
@@ -594,5 +685,6 @@ private data class DerivedFields(
     val playable: List<Channel>,
     val favorites: List<Channel>,
     val hero: Channel?,
+    val heroes: List<Channel>,
     val rails: List<Rail>,
 )

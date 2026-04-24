@@ -1,6 +1,12 @@
 package nl.vanvrouwerff.iptv.ui.detail
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
@@ -104,6 +111,20 @@ private fun DetailBody(
     // update (e.g. when VOD info arrives) would yank the user back mid-scroll.
     LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
 
+    // Ken Burns on the backdrop — slow, cinematic zoom that loops forever. A 14s cycle at
+    // 6 % peak scale is imperceptible frame-to-frame but very much felt over the time a
+    // user reads the synopsis.
+    val kenBurns = rememberInfiniteTransition(label = "detail-ken-burns")
+    val backdropScale by kenBurns.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(14_000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "detail-ken-burns-scale",
+    )
+
     Box(modifier = Modifier.fillMaxSize()) {
         // Backdrop — full-bleed cover with a side-to-side gradient for legibility.
         if (channel.logoUrl != null) {
@@ -111,7 +132,9 @@ private fun DetailBody(
                 model = channel.logoUrl,
                 contentDescription = channel.name,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .scale(backdropScale),
             )
         } else {
             Box(
@@ -144,12 +167,19 @@ private fun DetailBody(
         )
 
         Row(modifier = Modifier.fillMaxSize()) {
-            Column(
+            // Box + BottomStart pins the content block to the bottom of the left pane.
+            // When plot/credits push the block taller than the screen, the overflow goes
+            // upward (title/meta get clipped off the top) instead of downward — this keeps
+            // Play / Favorite / Back and the related rail always reachable.
+            Box(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxHeight()
+                    .fillMaxHeight(),
+            ) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
                     .padding(start = 64.dp, end = 48.dp, top = 72.dp, bottom = 56.dp),
-                verticalArrangement = Arrangement.Bottom,
             ) {
                 channel.groupTitle?.let {
                     Text(
@@ -287,6 +317,7 @@ private fun DetailBody(
                         onPick = onPickRelated,
                     )
                 }
+            }
             }
 
             if (channel.logoUrl != null) {

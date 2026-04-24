@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -73,6 +74,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.tv.foundation.lazy.list.TvLazyColumn
 import androidx.tv.foundation.lazy.list.TvLazyRow
 import androidx.tv.foundation.lazy.list.items
+import androidx.tv.foundation.lazy.list.itemsIndexed
 import androidx.tv.material3.Button
 import androidx.tv.material3.ClickableSurfaceDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
@@ -92,6 +94,12 @@ import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
  * this the skeleton stays up, above it the rails appear even mid-refresh.
  */
 private const val SKELETON_MIN_COUNT = 50
+
+/** How long each hero slot holds before the carousel rotates to the next one. */
+private const val HERO_ROTATE_MS: Long = 9_000L
+
+/** Full cycle for the Ken-Burns zoom — long enough to feel stately, not hypnotic. */
+private const val KEN_BURNS_CYCLE_MS: Int = 12_000
 
 private data class TypeTab(val type: ContentType, val labelRes: Int, val emptyRes: Int)
 
@@ -201,6 +209,10 @@ private fun NetflixLayout(
     val tabFocusRequester = remember { FocusRequester() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var searchVisible by remember { mutableStateOf(false) }
+    // Tracked via onFocusChanged on the TopBar wrapper — lets us fall BACK through to the
+    // system (exit app) only when focus is already on the tabs, instead of bouncing the
+    // user between tabs and exit on every press.
+    var topBarHasFocus by remember { mutableStateOf(false) }
 
     // BACK while the search bar is open: close it and clear the query so we return to
     // the rails view in a clean state rather than leaving stale results behind.
@@ -209,15 +221,15 @@ private fun NetflixLayout(
         onSearchChange("")
     }
 
-    // BACK at the base rails view: if we've scrolled below the hero, snap back to the top
-    // and focus the active tab pill. When already at the top, fall through so the system
-    // can handle BACK normally (e.g. exit the app).
+    // BACK anywhere inside the rails (hero, posters, any scroll position): snap the list
+    // to the top and hand focus to the active tab pill so the user can immediately switch
+    // between TV / films / series. Only falls through (exit app) when focus is already on
+    // the TopBar.
     BackHandler(
         enabled = !state.managingFavorites &&
             !searchVisible &&
             !state.isSearching &&
-            (railsListState.firstVisibleItemIndex > 0 ||
-                railsListState.firstVisibleItemScrollOffset > 0),
+            !topBarHasFocus,
     ) {
         scope.launch {
             runCatching { railsListState.scrollToItem(0) }
@@ -238,6 +250,7 @@ private fun NetflixLayout(
             error = state.error,
             activeProfileName = state.activeProfileName,
             selectedTabFocusRequester = tabFocusRequester,
+            onFocusChanged = { topBarHasFocus = it },
         )
 
         Box(modifier = Modifier.fillMaxSize()) {
@@ -347,6 +360,9 @@ private fun RailsView(
 ) {
     val rails = state.rails
     val hero = state.hero
+    // Carousel when we have multiple featured items (Movies/Series tab), single hero
+    // when the selected tab only offered one candidate (TV, or an empty match).
+    val heroes = state.heroes.ifEmpty { listOfNotNull(hero) }
     val emptyRes = Tabs.firstOrNull { it.type == state.selectedType }?.emptyRes
         ?: R.string.channels_empty
 
@@ -404,16 +420,12 @@ private fun RailsView(
                 verticalArrangement = Arrangement.spacedBy(28.dp),
             ) {
                 item {
-                    HeroBanner(
-                        channel = hero,
-                        isLastWatched = hero.id == state.lastWatchedId,
-                        nowPlaying = hero.epgChannelId?.let { state.nowPlayingByEpgId[it] },
-                        progressFraction = state.progressById[hero.id],
-                        onPlay = {
-                            // Series flow through too — the outer router opens the detail
-                            // screen for them instead of the player.
-                            onPlay(hero, state.playableChannels)
-                        },
+                    HeroCarousel(
+                        heroes = heroes,
+                        lastWatchedId = state.lastWatchedId,
+                        nowPlayingByEpgId = state.nowPlayingByEpgId,
+                        progressById = state.progressById,
+                        onPlay = { ch -> onPlay(ch, state.playableChannels) },
                     )
                 }
                 items(rails, key = { it.title }) { rail ->
@@ -993,11 +1005,13 @@ private fun TopBar(
     error: String?,
     activeProfileName: String?,
     selectedTabFocusRequester: FocusRequester,
+    onFocusChanged: (Boolean) -> Unit = {},
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 48.dp, vertical = 20.dp),
+            .padding(horizontal = 48.dp, vertical = 20.dp)
+            .onFocusChanged { onFocusChanged(it.hasFocus) },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -1268,16 +1282,16 @@ private fun SettingsChip(onClick: () -> Unit) {
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun HeroBanner(
-    channel: Channel,
-    isLastWatched: Boolean,
-    nowPlaying: String?,
-    progressFraction: Float?,
-    onPlay: () -> Unit,
+private fun HeroCarousel(
+    heroes: List<Channel>,
+    lastWatchedId: String?,
+    nowPlayingByEpgId: Map<String, String>,
+    progressById: Map<String, Float>,
+    onPlay: (Channel) -> Unit,
 ) {
+    if (heroes.isEmpty()) return
+    // Single focus requester shared across rotations so the Play button keeps focus.
     val focusRequester = remember { FocusRequester() }
-    // Focus only the FIRST time the hero appears in this composition — otherwise any change
-    // to `hero` (e.g. lastWatched updates while scrolling a rail) yanks focus back to Play.
     LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
 
     // Returning from the player: re-grab focus on the Play button so the D-pad has a clear
@@ -1293,6 +1307,98 @@ private fun HeroBanner(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
+    var index by remember(heroes) { mutableStateOf(0) }
+    // Auto-rotate only when we actually have multiple heroes. A single-item carousel would
+    // just re-key the AnimatedContent for no reason.
+    if (heroes.size > 1) {
+        LaunchedEffect(heroes) {
+            while (true) {
+                kotlinx.coroutines.delay(HERO_ROTATE_MS)
+                index = (index + 1) % heroes.size
+            }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        AnimatedContent(
+            targetState = index.coerceIn(0, heroes.lastIndex),
+            transitionSpec = { fadeIn(tween(600)) togetherWith fadeOut(tween(600)) },
+            label = "hero-carousel",
+        ) { i ->
+            val channel = heroes[i]
+            HeroBanner(
+                channel = channel,
+                isLastWatched = channel.id == lastWatchedId,
+                nowPlaying = channel.epgChannelId?.let { nowPlayingByEpgId[it] },
+                progressFraction = progressById[channel.id],
+                focusRequester = focusRequester,
+                onPlay = { onPlay(channel) },
+            )
+        }
+        if (heroes.size > 1) {
+            HeroDots(
+                total = heroes.size,
+                current = index.coerceIn(0, heroes.lastIndex),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 20.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeroDots(total: Int, current: Int, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        repeat(total) { i ->
+            val active = i == current
+            Box(
+                modifier = Modifier
+                    .size(width = if (active) 20.dp else 6.dp, height = 6.dp)
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(
+                        if (active) IptvPalette.Accent
+                        else IptvPalette.TextSecondary.copy(alpha = 0.45f),
+                    ),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun HeroBanner(
+    channel: Channel,
+    isLastWatched: Boolean,
+    nowPlaying: String?,
+    progressFraction: Float?,
+    focusRequester: FocusRequester? = null,
+    onPlay: () -> Unit,
+) {
+    // Single-hero fallback path (TV tab): create a local requester + focus on first
+    // composition so the original TV-tab behaviour (focus the Play button) still works.
+    val localFocus = remember { FocusRequester() }
+    val activeFocus = focusRequester ?: localFocus
+    LaunchedEffect(focusRequester == null) {
+        if (focusRequester == null) runCatching { localFocus.requestFocus() }
+    }
+
+    // Ken Burns — a slow, subtle scale that loops forever. The backdrop never sits still,
+    // giving the banner a cinematic feel without drifting enough to distract.
+    val infinite = rememberInfiniteTransition(label = "ken-burns")
+    val kenBurnsScale by infinite.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(KEN_BURNS_CYCLE_MS, easing = androidx.compose.animation.core.LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "ken-burns-scale",
+    )
 
     BoxWithConstraints(
         modifier = Modifier
@@ -1310,7 +1416,9 @@ private fun HeroBanner(
                 model = logo,
                 contentDescription = channel.name,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .scale(kenBurnsScale),
             )
         } else {
             Box(
@@ -1418,7 +1526,7 @@ private fun HeroBanner(
             Spacer(Modifier.height(20.dp))
             Button(
                 onClick = onPlay,
-                modifier = Modifier.focusRequester(focusRequester),
+                modifier = Modifier.focusRequester(activeFocus),
             ) {
                 Icon(
                     imageVector = Icons.Filled.PlayArrow,
@@ -1505,6 +1613,13 @@ private fun RailRow(
     nowPlayingByEpgId: Map<String, String> = emptyMap(),
     onPlay: (Channel) -> Unit,
 ) {
+    // Populair-nu morphs into the Netflix-style Top 10 treatment when we have at least 3
+    // matches, with the oversized numeral to the left of each poster. The cutoff keeps the
+    // effect from firing on very small providers where only one or two items match.
+    val isTopTen = (rail.title == ChannelsUiState.POPULAR_NOW) &&
+        contentType != ContentType.TV &&
+        rail.channels.size >= 3
+    val railTitle = if (isTopTen) stringResource(R.string.rail_top_ten) else rail.title
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(start = 48.dp, end = 48.dp, bottom = 12.dp),
@@ -1520,34 +1635,108 @@ private fun RailRow(
             )
             Spacer(Modifier.width(10.dp))
             Text(
-                text = rail.title,
+                text = railTitle,
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.Bold,
                     color = IptvPalette.TextPrimary,
                 ),
             )
         }
-        TvLazyRow(
-            contentPadding = PaddingValues(horizontal = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            items(rail.channels, key = { it.id }) { channel ->
-                val progress = progressById[channel.id]
-                when (contentType) {
-                    ContentType.TV -> LogoCard(
+        if (isTopTen) {
+            val topTen = remember(rail.channels) { rail.channels.take(10) }
+            TvLazyRow(
+                // Top-10 cards are noticeably wider because of the left-side numeral, so
+                // a touch more outer padding keeps the first rank from getting clipped.
+                contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                itemsIndexed(topTen) { i, channel ->
+                    TopTenCard(
+                        rank = i + 1,
                         channel = channel,
-                        progressFraction = progress,
-                        nowPlaying = channel.epgChannelId?.let { nowPlayingByEpgId[it] },
+                        progressFraction = progressById[channel.id],
                         onClick = { onPlay(channel) },
                     )
-                    ContentType.MOVIE, ContentType.SERIES ->
-                        PosterCard(
-                            channel = channel,
-                            progressFraction = progress,
-                            onClick = { onPlay(channel) },
-                        )
                 }
             }
+        } else {
+            TvLazyRow(
+                contentPadding = PaddingValues(horizontal = 48.dp),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                items(rail.channels, key = { it.id }) { channel ->
+                    val progress = progressById[channel.id]
+                    when (contentType) {
+                        ContentType.TV -> LogoCard(
+                            channel = channel,
+                            progressFraction = progress,
+                            nowPlaying = channel.epgChannelId?.let { nowPlayingByEpgId[it] },
+                            onClick = { onPlay(channel) },
+                        )
+                        ContentType.MOVIE, ContentType.SERIES ->
+                            PosterCard(
+                                channel = channel,
+                                progressFraction = progress,
+                                onClick = { onPlay(channel) },
+                            )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Netflix-style Top 10 card: a gigantic outlined ordinal sitting behind the left edge of
+ * the poster. The numeral is a solid, bold glyph with a contrasting outline so it reads
+ * equally well over dark and light artwork.
+ */
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun TopTenCard(
+    rank: Int,
+    channel: Channel,
+    progressFraction: Float?,
+    onClick: () -> Unit,
+) {
+    // Layout: a Row where the rank numeral takes the left third and the poster sits on top
+    // of its right portion. Mirrors the Netflix spec: numeral is huge, ~80 % of the card
+    // height, partly overlapped by the poster's left edge.
+    Row(
+        modifier = Modifier.width(248.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(92.dp)
+                .height(252.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Outlined mega-numeral — stroked so it reads as an accented rank marker
+            // regardless of the poster's brightness. A 180 sp glyph in a 92 dp box is
+            // just wide enough to peek out from behind the poster on the left.
+            Text(
+                text = rank.toString(),
+                style = androidx.compose.ui.text.TextStyle(
+                    fontSize = 180.sp,
+                    lineHeight = 180.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = (-8).sp,
+                    drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = 4f,
+                        join = androidx.compose.ui.graphics.StrokeJoin.Round,
+                    ),
+                ),
+                color = IptvPalette.TextPrimary.copy(alpha = 0.9f),
+            )
+        }
+        // The poster overlaps the numeral's right edge by ~16 dp, the way Netflix mounts it.
+        Box(modifier = Modifier.offset(x = (-16).dp)) {
+            PosterCard(
+                channel = channel,
+                progressFraction = progressFraction,
+                onClick = onClick,
+            )
         }
     }
 }

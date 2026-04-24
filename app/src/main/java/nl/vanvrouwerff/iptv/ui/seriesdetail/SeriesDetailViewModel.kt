@@ -40,6 +40,8 @@ data class Episode(
     val coverUrl: String?,
     val plot: String?,
     val durationSecs: Long,
+    /** Original air date in ISO "yyyy-MM-dd" form — displayed on the row when present. */
+    val airDate: String? = null,
 )
 
 data class SeriesSeason(
@@ -57,9 +59,18 @@ data class SeriesDetailState(
     val plot: String? = null,
     val genre: String? = null,
     val rating: String? = null,
+    /** 4-digit release year extracted from the series meta, when present. */
+    val releaseYear: String? = null,
     val seasons: List<SeriesSeason> = emptyList(),
     val selectedSeasonNumber: Int? = null,
     val isFavorite: Boolean = false,
+    /**
+     * Per-season "watched episode" count. Keyed by season number. An episode counts as
+     * watched once its saved progress fraction crosses WATCHED_FRACTION. Used by the season
+     * chip row to render a "4 van 10" progress subtitle so the user can see at a glance
+     * how far they are into each season.
+     */
+    val watchedCountBySeason: Map<Int, Int> = emptyMap(),
 ) {
     val selectedSeason: SeriesSeason?
         get() = seasons.firstOrNull { it.number == selectedSeasonNumber } ?: seasons.firstOrNull()
@@ -124,10 +135,13 @@ class SeriesDetailViewModel : ViewModel() {
                             plot = meta?.plot?.takeIf { it.isNotBlank() },
                             genre = meta?.genre?.takeIf { it.isNotBlank() },
                             rating = meta?.rating?.takeIf { it.isNotBlank() },
+                            releaseYear = meta?.releaseDate?.take(4)
+                                ?.takeIf { y -> y.length == 4 && y.all { it.isDigit() } },
                             seasons = seasons,
                             selectedSeasonNumber = seasons.firstOrNull()?.number,
                         )
                     }
+                    subscribeToEpisodeProgress(seasons)
                 },
                 onFailure = { err ->
                     _state.update {
@@ -136,6 +150,39 @@ class SeriesDetailViewModel : ViewModel() {
                 },
             )
         }
+    }
+
+    private var progressJob: kotlinx.coroutines.Job? = null
+
+    private fun subscribeToEpisodeProgress(seasons: List<SeriesSeason>) {
+        progressJob?.cancel()
+        val allEpisodeIds = seasons.flatMap { s -> s.episodes.map { it.id } }
+        if (allEpisodeIds.isEmpty()) {
+            _state.update { it.copy(watchedCountBySeason = emptyMap()) }
+            return
+        }
+        // Bucket episode IDs per season once — flowOn filters row-level progress into
+        // watched counts using these buckets on every Room emission.
+        val idToSeason: Map<String, Int> = buildMap {
+            seasons.forEach { s -> s.episodes.forEach { put(it.id, s.number) } }
+        }
+        progressJob = activeProfileIdFlow
+            .flatMapLatest { profileId ->
+                dao.observeProgressForIds(profileId, allEpisodeIds)
+            }
+            .map { rows ->
+                val counts = mutableMapOf<Int, Int>()
+                rows.forEach { row ->
+                    if (row.durationMs <= 0L) return@forEach
+                    val fraction = row.positionMs.toFloat() / row.durationMs
+                    if (fraction < WATCHED_FRACTION) return@forEach
+                    val season = idToSeason[row.channelId] ?: return@forEach
+                    counts[season] = (counts[season] ?: 0) + 1
+                }
+                counts.toMap()
+            }
+            .onEach { counts -> _state.update { it.copy(watchedCountBySeason = counts) } }
+            .launchIn(viewModelScope)
     }
 
     fun selectSeason(seasonNumber: Int) {
@@ -263,6 +310,7 @@ class SeriesDetailViewModel : ViewModel() {
             coverUrl = ep.info?.movieImage?.takeIf { it.isNotBlank() },
             plot = ep.info?.plot?.takeIf { it.isNotBlank() },
             durationSecs = ep.info?.durationSecs ?: 0L,
+            airDate = (ep.info?.airDate ?: ep.info?.releaseDate)?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -276,5 +324,7 @@ class SeriesDetailViewModel : ViewModel() {
 
     private companion object {
         const val SERIES_CACHE_TTL_MS: Long = 24L * 3_600_000L
+        /** Mirrors the screen-side constant: an episode counts as "bekeken" at 95 %. */
+        const val WATCHED_FRACTION = 0.95f
     }
 }

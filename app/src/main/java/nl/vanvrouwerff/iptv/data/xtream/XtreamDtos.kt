@@ -81,6 +81,9 @@ data class XtreamEpisodeInfo(
     val duration: String? = null,
     val plot: String? = null,
     @SerialName("movie_image") val movieImage: String? = null,
+    @SerialName("air_date") val airDate: String? = null,
+    // Alternate spelling used by some Xtream providers.
+    @SerialName("releasedate") val releaseDate: String? = null,
 )
 
 @Serializable

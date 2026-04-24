@@ -83,6 +83,7 @@ fun PlayerScreen(
     displayedCues: List<Cue>,
     statsOverlayVisible: Boolean,
     statsSnapshot: StatsSnapshot?,
+    nextEpisode: NextEpisodeInfo?,
     onPlayerViewReady: (PlayerView) -> Unit,
     onDismissTracks: () -> Unit,
     onDismissStats: () -> Unit,
@@ -93,6 +94,8 @@ fun PlayerScreen(
     onRetryStream: () -> Unit,
     onSkipError: () -> Unit,
     onExitOnError: () -> Unit,
+    onPlayNextEpisodeNow: () -> Unit,
+    onCancelNextEpisode: () -> Unit,
 ) {
     Box(
         modifier = Modifier
@@ -278,6 +281,89 @@ fun PlayerScreen(
                     onRetry = onRetryStream,
                     onSkip = onSkipError,
                     onExit = onExitOnError,
+                )
+            }
+        }
+
+        // "Volgende aflevering" countdown overlay — bottom-right when the current series
+        // episode is about to end and the queue has another episode waiting. Does not
+        // block focus (keeps it on the player controller) so the user can still scrub.
+        AnimatedVisibility(
+            visible = nextEpisode != null && errorState == null,
+            enter = fadeIn(tween(240)) + slideInVertically(tween(260)) { it / 4 },
+            exit = fadeOut(tween(220)) + slideOutVertically(tween(220)) { it / 4 },
+            modifier = Modifier.align(Alignment.BottomEnd),
+        ) {
+            nextEpisode?.let {
+                NextEpisodeOverlay(
+                    info = it,
+                    onPlayNow = onPlayNextEpisodeNow,
+                    onCancel = onCancelNextEpisode,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun NextEpisodeOverlay(
+    info: NextEpisodeInfo,
+    onPlayNow: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    // Single focus target on the Play-now button. We request focus once when the overlay
+    // mounts so pressing OK advances immediately without the user having to navigate.
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    Column(
+        modifier = Modifier
+            .padding(horizontal = 48.dp, vertical = 48.dp)
+            .width(360.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(IptvPalette.BackgroundDeep.copy(alpha = 0.92f))
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.player_next_episode_title).uppercase(),
+            style = MaterialTheme.typography.labelSmall.copy(
+                color = IptvPalette.Accent,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+            ),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = info.nextName,
+            style = MaterialTheme.typography.titleMedium.copy(
+                color = IptvPalette.TextPrimary,
+                fontWeight = FontWeight.Bold,
+            ),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.player_next_episode_in, info.secondsRemaining),
+            style = MaterialTheme.typography.labelMedium.copy(
+                color = IptvPalette.TextSecondary,
+            ),
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = onPlayNow,
+                modifier = Modifier.focusRequester(focus),
+            ) {
+                Text(
+                    stringResource(R.string.player_next_episode_now),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                )
+            }
+            Button(onClick = onCancel) {
+                Text(
+                    stringResource(R.string.player_next_episode_cancel),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                 )
             }
         }

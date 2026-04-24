@@ -169,9 +169,10 @@ private fun DetailBody(
             )
 
             val metaLine = listOfNotNull(
+                state.releaseYear,
+                state.rating?.let { "\u2605 $it" },
                 state.genre,
-                state.rating?.let { "★ $it" },
-            ).joinToString("  ·  ")
+            ).joinToString("  \u00B7  ")
             if (metaLine.isNotBlank()) {
                 Spacer(Modifier.height(6.dp))
                 Text(
@@ -241,10 +242,27 @@ private fun DetailBody(
             SeasonRow(
                 seasons = state.seasons,
                 selected = state.selectedSeasonNumber,
+                watchedCountBySeason = state.watchedCountBySeason,
                 onSelect = onSelectSeason,
             )
 
-            Spacer(Modifier.height(16.dp))
+            val active = state.selectedSeason
+            if (active != null) {
+                val watched = state.watchedCountBySeason[active.number] ?: 0
+                val total = active.episodes.size
+                if (total > 0) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(R.string.season_progress, watched, total),
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            color = IptvPalette.TextTertiary,
+                            letterSpacing = 1.sp,
+                        ),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
 
             val season = state.selectedSeason
             val episodes = season?.episodes.orEmpty()
@@ -284,6 +302,7 @@ private fun DetailBody(
 private fun SeasonRow(
     seasons: List<SeriesSeason>,
     selected: Int?,
+    watchedCountBySeason: Map<Int, Int>,
     onSelect: (Int) -> Unit,
 ) {
     if (seasons.isEmpty()) return
@@ -291,9 +310,20 @@ private fun SeasonRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(seasons, key = { it.number }) { season ->
+            val watched = watchedCountBySeason[season.number] ?: 0
+            val total = season.episodes.size
             SeasonChip(
                 label = season.label,
                 selected = season.number == selected,
+                // Show a tiny dot + count only when partially watched. A fully-watched
+                // season gets a ✓; a completely unwatched season gets nothing extra so
+                // the chip stays light.
+                trailing = when {
+                    total == 0 -> null
+                    watched >= total -> "\u2713"
+                    watched > 0 -> "$watched/$total"
+                    else -> null
+                },
                 onClick = { onSelect(season.number) },
             )
         }
@@ -302,7 +332,12 @@ private fun SeasonRow(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun SeasonChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun SeasonChip(
+    label: String,
+    selected: Boolean,
+    trailing: String?,
+    onClick: () -> Unit,
+) {
     Surface(
         onClick = onClick,
         shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(999.dp)),
@@ -314,13 +349,27 @@ private fun SeasonChip(label: String, selected: Boolean, onClick: () -> Unit) {
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
     ) {
-        Text(
-            text = label,
+        Row(
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
-            style = MaterialTheme.typography.labelLarge.copy(
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-            ),
-        )
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge.copy(
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                ),
+            )
+            if (trailing != null) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = trailing,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selected) Color.White else IptvPalette.AccentSoft,
+                    ),
+                )
+            }
+        }
     }
 }
 
@@ -391,6 +440,16 @@ private fun EpisodeRow(episode: Episode, onClick: (resumeMs: Long) -> Unit) {
                         color = IptvPalette.TextTertiary,
                     )
                 }
+            }
+            episode.airDate?.let { date ->
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = stringResource(R.string.episode_airdate, date),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        color = IptvPalette.TextTertiary,
+                        letterSpacing = 1.sp,
+                    ),
+                )
             }
             episode.plot?.let {
                 Spacer(Modifier.height(4.dp))

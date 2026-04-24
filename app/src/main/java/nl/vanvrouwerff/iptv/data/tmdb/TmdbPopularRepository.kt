@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import nl.vanvrouwerff.iptv.data.db.ChannelDao
 import nl.vanvrouwerff.iptv.data.db.TmdbPopularCacheEntity
 import nl.vanvrouwerff.iptv.data.remote.HttpClient
@@ -65,11 +66,44 @@ class TmdbPopularRepository(private val dao: ChannelDao) {
             }
     }
 
-    private companion object {
-        const val TAG = "TmdbPopular"
-        const val KEY_POPULAR_TV = "popular_tv"
-        const val KEY_POPULAR_MOVIES = "popular_movies"
-        const val CACHE_TTL_MS: Long = 24L * 3_600_000L
-        const val DEFAULT_LANGUAGE = "en-US"
+    /**
+     * Matched-rail cache: channel IDs that survived matching TMDB popular titles against
+     * the user's catalogue. Stored separately from the raw TMDB response so the UI can
+     * paint the "Populair nu" rail at cold start without waiting on catalogue load +
+     * 32k-row title normalisation. Shares the 24h TTL of the underlying TMDB data.
+     */
+    data class MatchedEntry(val ids: List<String>, val fetchedAt: Long)
+
+    suspend fun readMatchedIds(key: String): MatchedEntry? = withContext(Dispatchers.IO) {
+        val entry = dao.getTmdbPopularCache(key) ?: return@withContext null
+        val ids = runCatching {
+            HttpClient.json.decodeFromString(ListSerializer(String.serializer()), entry.payloadJson)
+        }.getOrElse { return@withContext null }
+        MatchedEntry(ids, entry.fetchedAt)
+    }
+
+    suspend fun writeMatchedIds(key: String, ids: List<String>) = withContext(Dispatchers.IO) {
+        val payload = HttpClient.json.encodeToString(ListSerializer(String.serializer()), ids)
+        dao.putTmdbPopularCache(
+            TmdbPopularCacheEntity(
+                cacheKey = key,
+                payloadJson = payload,
+                fetchedAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    fun isFresh(entry: MatchedEntry): Boolean =
+        System.currentTimeMillis() - entry.fetchedAt < CACHE_TTL_MS
+
+    companion object {
+        const val KEY_MATCHED_POPULAR_MOVIES = "matched_popular_movies"
+        const val KEY_MATCHED_POPULAR_SERIES = "matched_popular_series"
+
+        private const val TAG = "TmdbPopular"
+        private const val KEY_POPULAR_TV = "popular_tv"
+        private const val KEY_POPULAR_MOVIES = "popular_movies"
+        private const val CACHE_TTL_MS: Long = 24L * 3_600_000L
+        private const val DEFAULT_LANGUAGE = "en-US"
     }
 }

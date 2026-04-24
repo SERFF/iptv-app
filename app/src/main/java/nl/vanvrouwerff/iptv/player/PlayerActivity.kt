@@ -92,6 +92,16 @@ class PlayerActivity : ComponentActivity() {
     private var bannerJob: Job? = null
     private var numericJob: Job? = null
     private var autoRetryJob: Job? = null
+    private var nextEpisodeJob: Job? = null
+
+    private var nextEpisodeInfo by mutableStateOf<NextEpisodeInfo?>(null)
+
+    /**
+     * Set when the user dismisses the "Volgende aflevering"-overlay for the current
+     * episode. Suppresses the overlay AND the auto-advance for the remainder of this
+     * episode; resets on every channel change.
+     */
+    private var nextEpisodeCancelled = false
 
     /**
      * Transient-error retry counter. IPTV streams routinely hiccup (SSL handshake stalls,
@@ -139,6 +149,7 @@ class PlayerActivity : ComponentActivity() {
                     displayedCues = displayedCues,
                     statsOverlayVisible = statsOverlayVisible,
                     statsSnapshot = statsSnapshot,
+                    nextEpisode = nextEpisodeInfo,
                     onPlayerViewReady = { view ->
                         playerViewRef = view
                         view.setControllerVisibilityListener(
@@ -161,6 +172,15 @@ class PlayerActivity : ComponentActivity() {
                     onExitOnError = {
                         errorOverlay = null
                         finish()
+                    },
+                    onPlayNextEpisodeNow = {
+                        nextEpisodeInfo = null
+                        nextEpisodeCancelled = false
+                        channelStep(+1)
+                    },
+                    onCancelNextEpisode = {
+                        nextEpisodeInfo = null
+                        nextEpisodeCancelled = true
                     },
                 )
             }
@@ -264,9 +284,18 @@ class PlayerActivity : ComponentActivity() {
                     }
                     Player.STATE_ENDED -> {
                         val channel = channels.getOrNull(currentIndex) ?: return
-                        val isEpisode = channel.type == ContentType.SERIES
-                        if (isEpisode && currentIndex < channels.size - 1) {
-                            channelStep(+1)
+                        when (channel.type) {
+                            ContentType.SERIES -> {
+                                // If the user dismissed the "Volgende aflevering"-overlay
+                                // they're done with the queue — respect that instead of
+                                // auto-advancing anyway.
+                                if (nextEpisodeCancelled) return
+                                if (currentIndex < channels.size - 1) {
+                                    channelStep(+1)
+                                }
+                            }
+                            ContentType.MOVIE -> finish()
+                            ContentType.TV -> {}
                         }
                     }
                 }
@@ -343,6 +372,51 @@ class PlayerActivity : ComponentActivity() {
         startProgressLoop()
         startStatsLoop()
         startCueLoop()
+        startNextEpisodeLoop()
+    }
+
+    /**
+     * Polls the current playback position every 500 ms; when a SERIES episode is in its
+     * last [NEXT_EPISODE_WINDOW_MS] and has a queued next item, surfaces the countdown
+     * overlay. The overlay auto-hides once the player rolls onto the next episode
+     * (channelStep fires from onPlaybackStateChanged), and stays suppressed for the rest
+     * of the current episode if the user dismisses it.
+     */
+    private fun startNextEpisodeLoop() {
+        nextEpisodeJob?.cancel()
+        nextEpisodeJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(500L)
+                val p = player ?: continue
+                val channel = channels.getOrNull(currentIndex) ?: continue
+                if (channel.type != ContentType.SERIES || nextEpisodeCancelled) {
+                    if (nextEpisodeInfo != null) nextEpisodeInfo = null
+                    continue
+                }
+                val hasNext = currentIndex < channels.size - 1
+                if (!hasNext) {
+                    if (nextEpisodeInfo != null) nextEpisodeInfo = null
+                    continue
+                }
+                val pos = p.currentPosition
+                val dur = p.duration
+                if (dur <= 0 || pos <= 0) {
+                    if (nextEpisodeInfo != null) nextEpisodeInfo = null
+                    continue
+                }
+                val remainingMs = dur - pos
+                if (remainingMs in 0L..NEXT_EPISODE_WINDOW_MS) {
+                    val secs = ((remainingMs + 999) / 1000).toInt().coerceAtLeast(0)
+                    val nextName = channels.getOrNull(currentIndex + 1)?.name.orEmpty()
+                    val prev = nextEpisodeInfo
+                    if (prev?.secondsRemaining != secs || prev.nextName != nextName) {
+                        nextEpisodeInfo = NextEpisodeInfo(nextName, secs)
+                    }
+                } else if (nextEpisodeInfo != null) {
+                    nextEpisodeInfo = null
+                }
+            }
+        }
     }
 
     private fun startCueLoop() {
@@ -385,6 +459,11 @@ class PlayerActivity : ComponentActivity() {
         // channel must not consume the budget for this new stream.
         autoRetryCount = 0
         autoRetryJob?.cancel()
+        // Reset the next-episode overlay state so a fresh episode starts the countdown
+        // from scratch — without this, a user who dismissed the overlay on episode 3
+        // would never see it on episode 4 (same activity instance, cancelled flag sticks).
+        nextEpisodeInfo = null
+        nextEpisodeCancelled = false
         // Drop any queued cues from the previous stream — their receivedAtMs references the
         // old media timeline and would mis-fire on the new one.
         synchronized(cueQueue) { cueQueue.clear() }
@@ -761,6 +840,8 @@ class PlayerActivity : ComponentActivity() {
         numericJob = null
         autoRetryJob?.cancel()
         autoRetryJob = null
+        nextEpisodeJob?.cancel()
+        nextEpisodeJob = null
         playerViewRef?.player = null
         playerViewRef = null
         player?.release()
@@ -789,6 +870,8 @@ class PlayerActivity : ComponentActivity() {
         /** Silent-retry budget for transient IO errors before showing the overlay. */
         private const val MAX_AUTO_RETRY = 1
         private const val AUTO_RETRY_DELAY_MS = 1_500L
+        /** Remaining-playback threshold that triggers the "Volgende aflevering"-overlay. */
+        const val NEXT_EPISODE_WINDOW_MS: Long = 15_000L
         private const val TAG = "PlayerActivity"
     }
 }
@@ -800,6 +883,16 @@ data class BannerInfo(
     val nowPlaying: String?,
     val next: String?,
     val channelNumber: Int?,
+)
+
+/**
+ * Live state for the "Volgende aflevering"-overlay. Populated during the last
+ * [NEXT_EPISODE_WINDOW_MS] of a series episode when the queue has another episode
+ * waiting; the overlay counts down and the player auto-advances on zero.
+ */
+data class NextEpisodeInfo(
+    val nextName: String,
+    val secondsRemaining: Int,
 )
 
 data class ErrorState(
