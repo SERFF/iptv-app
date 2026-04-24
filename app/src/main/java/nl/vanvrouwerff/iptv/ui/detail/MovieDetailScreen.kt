@@ -1,5 +1,7 @@
 package nl.vanvrouwerff.iptv.ui.detail
 
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -26,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.OndemandVideo
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -43,6 +47,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -255,8 +260,12 @@ private fun DetailBody(
 
                 Spacer(Modifier.height(24.dp))
 
+                val hasSideContent = state.similar.isNotEmpty() ||
+                    state.related.isNotEmpty() ||
+                    state.castList.isNotEmpty()
+                val context = LocalContext.current
                 Row(
-                    modifier = Modifier.padding(bottom = if (state.related.isNotEmpty()) 24.dp else 0.dp),
+                    modifier = Modifier.padding(bottom = if (hasSideContent) 24.dp else 0.dp),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Button(
@@ -278,6 +287,31 @@ private fun DetailBody(
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
                             modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
                         )
+                    }
+                    state.trailerUrl?.let { url ->
+                        Button(
+                            onClick = {
+                                // ACTION_VIEW on a YouTube URL lets the system pick whatever
+                                // app is registered — YouTube on Google TV, browser otherwise.
+                                // NEW_TASK because we're not inside a standard Compose Activity
+                                // hierarchy that owns the launcher.
+                                runCatching {
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    context.startActivity(intent)
+                                }
+                            },
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.OndemandVideo,
+                                contentDescription = stringResource(R.string.icon_desc_trailer),
+                                modifier = Modifier.padding(start = 10.dp).size(20.dp),
+                            )
+                            Text(
+                                text = stringResource(R.string.detail_trailer),
+                                modifier = Modifier.padding(start = 8.dp, end = 14.dp, top = 4.dp, bottom = 4.dp),
+                            )
+                        }
                     }
                     Button(onClick = onToggleFavorite) {
                         val label = if (state.isFavorite)
@@ -310,8 +344,21 @@ private fun DetailBody(
                     }
                 }
 
-                if (state.related.isNotEmpty() && channel.groupTitle != null) {
-                    RelatedRail(
+                // Cast strip first (who's in it?), then the similar/related rail. Both
+                // optional — only one, the other, both, or neither may be populated
+                // depending on TMDB coverage.
+                if (state.castList.isNotEmpty()) {
+                    CastRail(cast = state.castList)
+                    Spacer(Modifier.height(20.dp))
+                }
+
+                when {
+                    state.similar.isNotEmpty() -> SimilarRail(
+                        titleRes = R.string.rail_more_like_this,
+                        channels = state.similar,
+                        onPick = onPickRelated,
+                    )
+                    state.related.isNotEmpty() && channel.groupTitle != null -> RelatedRail(
                         groupTitle = channel.groupTitle,
                         channels = state.related,
                         onPick = onPickRelated,
@@ -336,6 +383,107 @@ private fun DetailBody(
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun CastRail(cast: List<nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieDetailsRepository.CastEntry>) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = stringResource(R.string.rail_cast),
+            style = MaterialTheme.typography.labelLarge.copy(
+                color = IptvPalette.TextSecondary,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+            ),
+        )
+        Spacer(Modifier.height(10.dp))
+        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(cast, key = { it.id }) { member -> CastAvatar(member) }
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun CastAvatar(member: nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieDetailsRepository.CastEntry) {
+    Column(
+        modifier = Modifier.width(92.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(80.dp)
+                .clip(RoundedCornerShape(999.dp))
+                .background(IptvPalette.SurfaceLift),
+            contentAlignment = Alignment.Center,
+        ) {
+            val avatarUrl = member.profilePath?.let { TMDB_PROFILE_BASE + it }
+            if (avatarUrl != null) {
+                AsyncImage(
+                    model = avatarUrl,
+                    contentDescription = member.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Person,
+                    contentDescription = null,
+                    tint = IptvPalette.TextTertiary,
+                    modifier = Modifier.size(44.dp),
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = member.name,
+            style = MaterialTheme.typography.labelSmall.copy(
+                color = IptvPalette.TextPrimary,
+                fontWeight = FontWeight.SemiBold,
+            ),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        member.character?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = IptvPalette.TextTertiary,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+/** TMDB CDN base for the circular 185-wide profile thumbnail. */
+private const val TMDB_PROFILE_BASE = "https://image.tmdb.org/t/p/w185"
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun SimilarRail(
+    @androidx.annotation.StringRes titleRes: Int,
+    channels: List<Channel>,
+    onPick: (Channel) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = stringResource(titleRes),
+            style = MaterialTheme.typography.labelLarge.copy(
+                color = IptvPalette.TextSecondary,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 2.sp,
+            ),
+        )
+        Spacer(Modifier.height(10.dp))
+        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            items(channels, key = { it.id }) { ch ->
+                RelatedCard(channel = ch, onClick = { onPick(ch) })
             }
         }
     }

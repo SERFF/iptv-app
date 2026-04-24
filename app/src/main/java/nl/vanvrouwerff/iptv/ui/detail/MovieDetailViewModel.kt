@@ -17,9 +17,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import nl.vanvrouwerff.iptv.IptvApp
 import nl.vanvrouwerff.iptv.data.Channel
+import nl.vanvrouwerff.iptv.data.ContentType
 import nl.vanvrouwerff.iptv.data.db.toDomain
 import nl.vanvrouwerff.iptv.data.remote.HttpClient
 import nl.vanvrouwerff.iptv.data.settings.SourceConfig
+import nl.vanvrouwerff.iptv.data.tmdb.MovieMatcher
+import nl.vanvrouwerff.iptv.data.tmdb.TmdbCatalogueMatcher
+import nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieDetailsRepository
 import nl.vanvrouwerff.iptv.data.xtream.XtreamApi
 
 data class MovieDetailState(
@@ -37,6 +41,20 @@ data class MovieDetailState(
     val rating: String? = null,
     val durationLabel: String? = null,
     val country: String? = null,
+    /**
+     * Trailer URL sourced from either Xtream VOD info (`youtube_trailer`) or TMDB's
+     * videos endpoint. Expressed as a fully-qualified YouTube URL so the UI can fire
+     * an ACTION_VIEW intent without worrying about the source.
+     */
+    val trailerUrl: String? = null,
+    /** Up to 10 cast faces from TMDB, ordered by billing. */
+    val castList: List<TmdbMovieDetailsRepository.CastEntry> = emptyList(),
+    /**
+     * TMDB's "similar movies" list, intersected with the user's catalogue so only
+     * actually-playable titles show up. Replaces the group-title "Meer in X" rail when
+     * non-empty.
+     */
+    val similar: List<Channel> = emptyList(),
     /** Other titles sharing the same groupTitle — the "Meer in X" rail. */
     val related: List<Channel> = emptyList(),
 ) {
@@ -74,6 +92,7 @@ class MovieDetailViewModel : ViewModel() {
             channel?.let {
                 fetchVodInfo(it)
                 fetchRelated(it)
+                fetchTmdbDetails(it)
             }
         }
 
@@ -127,8 +146,64 @@ class MovieDetailViewModel : ViewModel() {
                     rating = meta.rating?.takeIf { s -> s.isNotBlank() },
                     country = meta.country?.takeIf { s -> s.isNotBlank() },
                     durationLabel = formatDuration(meta.durationSecs, meta.duration),
+                    // If TMDB hasn't populated a trailer yet, use whatever Xtream provided —
+                    // the TMDB fetch below will overwrite with an official Trailer when it
+                    // wins the search. Providers send either a bare YouTube id or a full
+                    // URL; normaliseTrailerUrl handles both.
+                    trailerUrl = it.trailerUrl ?: normaliseTrailerUrl(meta.youtubeTrailer),
                 )
             }
+        }
+    }
+
+    /**
+     * TMDB enrichment — adds cast faces, a better-curated trailer, and the
+     * "Meer zoals dit" rail intersected with the user's catalogue. All best-effort:
+     * detail screen keeps working when TMDB is unreachable or unconfigured.
+     */
+    private suspend fun fetchTmdbDetails(channel: Channel) {
+        val app = IptvApp.get()
+        // Strip Xtream's country-flag / quality prefixes before handing the title to TMDB's
+        // search endpoint — "| EN | Dune Part Two" becomes "dune part two", which actually
+        // matches TMDB's canonical title.
+        val titleForSearch = TmdbCatalogueMatcher.normalize(channel.name)
+            .ifBlank { channel.name }
+
+        // Use the Xtream-derived year when available (it's in _state by the time this runs
+        // after fetchVodInfo completes above); fall back to parsing a bare 4-digit year out
+        // of the title itself.
+        val yearFromState = _state.value.releaseYear?.toIntOrNull()
+        val yearFromTitle = YEAR_REGEX.find(channel.name)?.value?.toIntOrNull()
+        val year = yearFromState ?: yearFromTitle
+
+        val bundle = runCatching {
+            app.tmdbMovieDetails.lookupMovie(
+                channelId = channel.id,
+                title = titleForSearch,
+                releaseYear = year,
+            )
+        }.getOrNull() ?: return
+
+        // Match TMDB's similar list against the user's catalogue of movies — only show
+        // titles they can actually play.
+        val matched = if (bundle.similar.isEmpty()) emptyList()
+        else withContext(Dispatchers.Default) {
+            val userMovies = dao.allChannels().asSequence()
+                .map { it.toDomain() }
+                .filter { it.type == ContentType.MOVIE && it.id != channel.id }
+                .toList()
+            MovieMatcher.match(bundle.similar, userMovies)
+        }
+
+        val trailer = bundle.trailerYoutubeKey?.let { "https://www.youtube.com/watch?v=$it" }
+        _state.update { prev ->
+            prev.copy(
+                castList = bundle.cast,
+                similar = matched,
+                // Prefer TMDB's trailer pick over Xtream's when both exist — it's usually
+                // the official 2–3 minute trailer rather than a random upload.
+                trailerUrl = trailer ?: prev.trailerUrl,
+            )
         }
     }
 
@@ -152,5 +227,26 @@ class MovieDetailViewModel : ViewModel() {
             return if (h > 0) "${h}u ${m}m" else "${m}m"
         }
         return fallback?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Xtream's `youtube_trailer` is sometimes a full watch URL, sometimes a bare 11-char
+     * YouTube video id. Normalise to a canonical watch URL so the UI can always just fire
+     * ACTION_VIEW with it.
+     */
+    private fun normaliseTrailerUrl(raw: String?): String? {
+        val s = raw?.trim().orEmpty()
+        if (s.isEmpty()) return null
+        if (s.startsWith("http://", ignoreCase = true) ||
+            s.startsWith("https://", ignoreCase = true)
+        ) return s
+        // Bare 11-char ids: letters, digits, '-', '_'.
+        if (YOUTUBE_ID_REGEX.matches(s)) return "https://www.youtube.com/watch?v=$s"
+        return null
+    }
+
+    private companion object {
+        val YEAR_REGEX = Regex("\\b(19|20)\\d{2}\\b")
+        val YOUTUBE_ID_REGEX = Regex("[A-Za-z0-9_-]{11}")
     }
 }

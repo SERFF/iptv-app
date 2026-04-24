@@ -44,3 +44,60 @@ data class TmdbMovieItem(
     @SerialName("vote_average") val voteAverage: Double = 0.0,
     val overview: String? = null,
 )
+
+/**
+ * Full detail payload for a single movie. `append_to_response=credits,similar,videos`
+ * folds the three sub-resources into this object so the detail screen hydrates after a
+ * single HTTP call.
+ */
+@Serializable
+data class TmdbMovieDetailsResponse(
+    val id: Long,
+    val title: String,
+    @SerialName("original_title") val originalTitle: String? = null,
+    @SerialName("release_date") val releaseDate: String? = null,
+    val runtime: Int? = null,
+    val credits: TmdbCreditsResponse? = null,
+    val similar: TmdbMovieListResponse? = null,
+    val videos: TmdbVideosResponse? = null,
+)
+
+@Serializable
+data class TmdbCreditsResponse(
+    val cast: List<TmdbCastMember> = emptyList(),
+    val crew: List<TmdbCrewMember> = emptyList(),
+)
+
+@Serializable
+data class TmdbCastMember(
+    val id: Long,
+    val name: String,
+    val character: String? = null,
+    @SerialName("profile_path") val profilePath: String? = null,
+    val order: Int = 999,
+)
+
+@Serializable
+data class TmdbCrewMember(
+    val id: Long,
+    val name: String,
+    val job: String? = null,
+    val department: String? = null,
+    @SerialName("profile_path") val profilePath: String? = null,
+)
+
+@Serializable
+data class TmdbVideosResponse(
+    val results: List<TmdbVideoItem> = emptyList(),
+)
+
+@Serializable
+data class TmdbVideoItem(
+    val id: String,
+    val key: String,
+    val name: String,
+    val site: String,
+    val type: String,
+    val official: Boolean = false,
+    @SerialName("published_at") val publishedAt: String? = null,
+)

@@ -18,6 +18,7 @@ import nl.vanvrouwerff.iptv.data.remote.HttpClient
 import nl.vanvrouwerff.iptv.data.repo.PlaylistRefreshScheduler
 import nl.vanvrouwerff.iptv.data.repo.PlaylistRefreshUseCase
 import nl.vanvrouwerff.iptv.data.settings.SettingsStore
+import nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieDetailsRepository
 import nl.vanvrouwerff.iptv.data.tmdb.TmdbPopularRepository
 
 /**
@@ -33,6 +34,9 @@ class IptvApp : Application(), ImageLoaderFactory {
     }
     val tmdbPopular: TmdbPopularRepository by lazy {
         TmdbPopularRepository(database.channelDao())
+    }
+    val tmdbMovieDetails: TmdbMovieDetailsRepository by lazy {
+        TmdbMovieDetailsRepository()
     }
 
     /**

@@ -166,6 +166,11 @@
     <string name="season_progress">%1$d van %2$d bekeken</string>
 
     <string name="rail_top_ten">Top 10 deze week</string>
+    <string name="rail_more_like_this">Meer zoals dit</string>
+    <string name="rail_cast">Cast</string>
+
+    <string name="detail_trailer">Trailer</string>
+    <string name="icon_desc_trailer">Trailer afspelen</string>
 
     <string name="player_next_episode_title">Volgende aflevering</string>
     <string name="player_next_episode_in">Over %1$ds</string>
