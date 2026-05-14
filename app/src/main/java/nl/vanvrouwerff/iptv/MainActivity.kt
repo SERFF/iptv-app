@@ -18,11 +18,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
@@ -33,6 +35,7 @@ import nl.vanvrouwerff.iptv.ui.detail.MovieDetailScreen
 import nl.vanvrouwerff.iptv.ui.seriesdetail.Episode
 import nl.vanvrouwerff.iptv.ui.seriesdetail.SeriesDetailScreen
 import nl.vanvrouwerff.iptv.ui.seriesdetail.SeriesSeason
+import nl.vanvrouwerff.iptv.ui.profilepicker.ProfilePickerScreen
 import nl.vanvrouwerff.iptv.ui.profiles.ProfilesScreen
 import nl.vanvrouwerff.iptv.ui.settings.SettingsScreen
 import nl.vanvrouwerff.iptv.ui.splash.SplashScreen
@@ -138,9 +141,13 @@ private sealed interface Route {
     data object Channels : Route
     data object Settings : Route
     data object Profiles : Route
+    data object ProfilePicker : Route
     data class MovieDetail(val channelId: String) : Route
     data class SeriesDetail(val seriesId: String) : Route
 }
+
+/** Skip the cold-start profile picker if the user picked a profile within this window. */
+private const val PROFILE_SESSION_WINDOW_MS: Long = 8L * 3600 * 1000
 
 @Composable
 private fun AppRoot(
@@ -165,7 +172,24 @@ private fun AppRoot(
         delay(MIN_SPLASH_DURATION_MS)
         minSplashElapsed = true
     }
-    val showSplash = !resolved || !minSplashElapsed
+
+    // Cold-start profile-picker gate: only show the picker on a fresh launch when there
+    // is more than one profile AND the user hasn't picked one within the session window.
+    // null = unresolved (suspended query hasn't returned); the splash is held until then
+    // so we don't flash Channels and then yank into the picker.
+    val profilePickerNeeded: Boolean? by produceState<Boolean?>(initialValue = null, source) {
+        if (source == null) {
+            value = false
+            return@produceState
+        }
+        value = runCatching {
+            val count = app.database.profileDao().allProfiles().size
+            val lastSession = app.settings.lastProfileSessionAt.first()
+            count > 1 && (System.currentTimeMillis() - lastSession) > PROFILE_SESSION_WINDOW_MS
+        }.getOrDefault(false)
+    }
+
+    val showSplash = !resolved || !minSplashElapsed || (source != null && profilePickerNeeded == null)
 
     var routeOverride by remember { mutableStateOf<Route?>(null) }
 
@@ -176,7 +200,11 @@ private fun AppRoot(
     // is activity-scoped so its per-type cache survives this swap; only LazyListState
     // (scroll position) resets on back, which is a fair trade for correctness.
     val route: Route = routeOverride
-        ?: if (source == null) Route.Welcome else Route.Channels
+        ?: when {
+            source == null -> Route.Welcome
+            profilePickerNeeded == true -> Route.ProfilePicker
+            else -> Route.Channels
+        }
 
     // Crossfade between splash and the real app so the swap is a smooth dissolve rather
     // than a pop. `targetState = showSplash` keys on a Boolean so Compose only transitions
@@ -226,6 +254,9 @@ private fun AppRouteHost(
             )
             Route.Profiles -> ProfilesScreen(
                 onBack = { onRouteChange(Route.Channels) },
+                onPicked = { onRouteChange(Route.Channels) },
+            )
+            Route.ProfilePicker -> ProfilePickerScreen(
                 onPicked = { onRouteChange(Route.Channels) },
             )
             Route.Channels -> ChannelsScreen(

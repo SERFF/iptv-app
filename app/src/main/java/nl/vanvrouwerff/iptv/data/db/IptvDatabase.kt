@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TmdbPopularCacheEntity::class,
         ProfileEntity::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = false,
 )
 abstract class IptvDatabase : RoomDatabase() {
@@ -69,6 +69,16 @@ abstract class IptvDatabase : RoomDatabase() {
          *    place, so we create the new table, copy rows over assigning the default
          *    profile, drop the old table, and rename.
          */
+        /**
+         * v9 → v10: optional emoji-avatar override for profiles. Existing rows keep their
+         * colour-and-initial tile (avatarEmoji NULL). Phase 3 (profile picker on cold start).
+         */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE profiles ADD COLUMN avatarEmoji TEXT")
+            }
+        }
+
         private val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 val now = System.currentTimeMillis()
@@ -219,7 +229,7 @@ abstract class IptvDatabase : RoomDatabase() {
                     .addMigrations(
                         MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                         MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-                        MIGRATION_8_9,
+                        MIGRATION_8_9, MIGRATION_9_10,
                     )
                     .addCallback(object : RoomDatabase.Callback() {
                         // Fresh installs skip migrations entirely — Room just builds tables

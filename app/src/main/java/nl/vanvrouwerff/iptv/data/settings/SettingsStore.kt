@@ -108,6 +108,19 @@ class SettingsStore(private val context: Context) {
     }
 
     /**
+     * Epoch millis of the last time the user picked a profile (cold start picker or the
+     * "Wisselen van profiel" shortcut). Used to gate the cold-start profile picker —
+     * within [PROFILE_SESSION_WINDOW_MS] of the last pick the picker is skipped and the
+     * app boots straight into Channels.
+     */
+    val lastProfileSessionAt: Flow<Long> =
+        context.dataStore.data.map { it[LAST_PROFILE_SESSION_AT] ?: 0L }
+
+    suspend fun setLastProfileSessionAt(nowMs: Long = System.currentTimeMillis()) {
+        context.dataStore.edit { prefs -> prefs[LAST_PROFILE_SESSION_AT] = nowMs }
+    }
+
+    /**
      * Automatic nightly refresh. Disabled by default so we don't silently burn the user's
      * bandwidth if they never open Instellingen. Hour is 0..23 in local time; minutes are
      * always :00 — a single knob is enough and avoids a fiddly minute-picker on the remote.
@@ -163,6 +176,7 @@ class SettingsStore(private val context: Context) {
         val PLAYLIST_ETAG = stringPreferencesKey("playlist_etag")
         val PLAYLIST_LAST_MODIFIED = stringPreferencesKey("playlist_last_modified")
         val LAST_REFRESH_AT = longPreferencesKey("last_refresh_at")
+        val LAST_PROFILE_SESSION_AT = longPreferencesKey("last_profile_session_at")
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
         val AUTO_REFRESH_ENABLED = booleanPreferencesKey("auto_refresh_enabled")
         val AUTO_REFRESH_HOUR = intPreferencesKey("auto_refresh_hour")

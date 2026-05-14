@@ -41,6 +41,8 @@ data class ProfileEntity(
     val colorArgb: Int,
     val sortIndex: Int,
     val createdAt: Long,
+    /** Optional single-emoji avatar override; when null, render colour + initial instead. */
+    val avatarEmoji: String? = null,
 )
 
 @Entity(

@@ -91,6 +91,7 @@
     <string name="hero_now_on_prefix">NU OP · %1$s</string>
     <string name="hero_view_series">Bekijken</string>
     <string name="hero_more_info">Meer info</string>
+    <string name="profile_picker_title">Wie kijkt er?</string>
 
     <string name="error_generic">Er ging iets mis.</string>
     <string name="error_retry">Opnieuw proberen</string>
