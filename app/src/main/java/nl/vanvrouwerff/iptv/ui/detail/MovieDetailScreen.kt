@@ -226,10 +226,25 @@ private fun DetailBody(
                 }
 
                 state.plot?.let {
-                    Spacer(Modifier.height(14.dp))
+                    if (it.length > 80) {
+                        Spacer(Modifier.height(20.dp))
+                        Text(
+                            text = stringResource(R.string.detail_section_overview),
+                            style = MaterialTheme.typography.labelLarge.copy(
+                                color = IptvPalette.TextSecondary,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 2.sp,
+                            ),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    } else {
+                        Spacer(Modifier.height(14.dp))
+                    }
                     Text(
                         text = it,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodyLarge.copy(
+                            lineHeight = 26.sp,
+                        ),
                         color = IptvPalette.TextSecondary,
                         maxLines = 5,
                         overflow = TextOverflow.Ellipsis,
