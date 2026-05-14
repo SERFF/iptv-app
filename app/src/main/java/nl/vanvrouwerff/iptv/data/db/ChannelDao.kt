@@ -28,6 +28,9 @@ interface ChannelDao {
     @Query("SELECT * FROM channels ORDER BY sortIndex ASC")
     suspend fun allChannels(): List<ChannelEntity>
 
+    @Query("SELECT * FROM channels WHERE type = :type ORDER BY sortIndex ASC")
+    suspend fun getChannelsByType(type: String): List<ChannelEntity>
+
     @Query("SELECT * FROM categories ORDER BY sortIndex ASC")
     fun observeCategories(): Flow<List<CategoryEntity>>
 

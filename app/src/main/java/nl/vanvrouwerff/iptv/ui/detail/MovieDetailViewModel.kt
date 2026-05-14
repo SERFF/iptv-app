@@ -1,5 +1,6 @@
 package nl.vanvrouwerff.iptv.ui.detail
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -17,11 +18,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import nl.vanvrouwerff.iptv.IptvApp
 import nl.vanvrouwerff.iptv.data.Channel
-import nl.vanvrouwerff.iptv.data.ContentType
 import nl.vanvrouwerff.iptv.data.db.toDomain
 import nl.vanvrouwerff.iptv.data.remote.HttpClient
 import nl.vanvrouwerff.iptv.data.settings.SourceConfig
-import nl.vanvrouwerff.iptv.data.tmdb.MovieMatcher
 import nl.vanvrouwerff.iptv.data.tmdb.TmdbCatalogueMatcher
 import nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieDetailsRepository
 import nl.vanvrouwerff.iptv.data.xtream.XtreamApi
@@ -163,18 +162,14 @@ class MovieDetailViewModel : ViewModel() {
      */
     private suspend fun fetchTmdbDetails(channel: Channel) {
         val app = IptvApp.get()
-        // Strip Xtream's country-flag / quality prefixes before handing the title to TMDB's
-        // search endpoint — "| EN | Dune Part Two" becomes "dune part two", which actually
-        // matches TMDB's canonical title.
         val titleForSearch = TmdbCatalogueMatcher.normalize(channel.name)
             .ifBlank { channel.name }
 
-        // Use the Xtream-derived year when available (it's in _state by the time this runs
-        // after fetchVodInfo completes above); fall back to parsing a bare 4-digit year out
-        // of the title itself.
         val yearFromState = _state.value.releaseYear?.toIntOrNull()
         val yearFromTitle = YEAR_REGEX.find(channel.name)?.value?.toIntOrNull()
         val year = yearFromState ?: yearFromTitle
+
+        Log.i(TAG, "fetchTmdbDetails name=\"${channel.name}\" normalised=\"$titleForSearch\" year=$year id=${channel.id}")
 
         val bundle = runCatching {
             app.tmdbMovieDetails.lookupMovie(
@@ -182,29 +177,46 @@ class MovieDetailViewModel : ViewModel() {
                 title = titleForSearch,
                 releaseYear = year,
             )
-        }.getOrNull() ?: return
+        }.getOrNull()
 
-        // Match TMDB's similar list against the user's catalogue of movies — only show
-        // titles they can actually play.
-        val matched = if (bundle.similar.isEmpty()) emptyList()
-        else withContext(Dispatchers.Default) {
-            val userMovies = dao.allChannels().asSequence()
-                .map { it.toDomain() }
-                .filter { it.type == ContentType.MOVIE && it.id != channel.id }
-                .toList()
-            MovieMatcher.match(bundle.similar, userMovies)
+        if (bundle == null) {
+            Log.i(TAG, "TMDB lookup returned null (no hits or unconfigured)")
+            return
         }
+        Log.i(
+            TAG,
+            "TMDB hit tmdbId=${bundle.tmdbId} trailer=${bundle.trailerYoutubeKey ?: "-"} " +
+                "cast=${bundle.cast.size} similar=${bundle.similar.size}",
+        )
 
+        // First pass: push cast + trailer to the UI IMMEDIATELY. The similar-matching
+        // below scans the full catalogue (up to 20k movies) and can take a noticeable
+        // beat on a Chromecast HD; we don't want to hold the cast avatars hostage
+        // behind that scan.
         val trailer = bundle.trailerYoutubeKey?.let { "https://www.youtube.com/watch?v=$it" }
         _state.update { prev ->
             prev.copy(
                 castList = bundle.cast,
-                similar = matched,
-                // Prefer TMDB's trailer pick over Xtream's when both exist — it's usually
-                // the official 2–3 minute trailer rather than a random upload.
                 trailerUrl = trailer ?: prev.trailerUrl,
             )
         }
+
+        // Second pass: the "Meer zoals dit"-rail. The repo keeps a process-lifetime index
+        // of normalised-title → channel, built once on first detail open, reused on every
+        // subsequent one. Typical match cost is now ~20 lookups instead of 50k×normalise.
+        if (bundle.similar.isEmpty()) return
+        val startedAt = System.currentTimeMillis()
+        val matched = app.tmdbMovieDetails.matchSimilar(
+            similar = bundle.similar,
+            excludeChannelId = channel.id,
+            dao = dao,
+        )
+        Log.i(
+            TAG,
+            "similar matched against catalogue: ${matched.size} " +
+                "(took ${System.currentTimeMillis() - startedAt} ms)",
+        )
+        _state.update { it.copy(similar = matched) }
     }
 
     private suspend fun fetchRelated(channel: Channel) {
@@ -248,5 +260,6 @@ class MovieDetailViewModel : ViewModel() {
     private companion object {
         val YEAR_REGEX = Regex("\\b(19|20)\\d{2}\\b")
         val YOUTUBE_ID_REGEX = Regex("[A-Za-z0-9_-]{11}")
+        const val TAG = "MovieDetailVM"
     }
 }

@@ -4,7 +4,12 @@ import android.util.Log
 import java.util.Collections
 import java.util.LinkedHashMap
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import nl.vanvrouwerff.iptv.data.Channel
+import nl.vanvrouwerff.iptv.data.db.ChannelDao
+import nl.vanvrouwerff.iptv.data.db.toDomain
 
 /**
  * Fetches TMDB's full detail bundle for a single movie — trailer key, cast, similar titles —
@@ -38,46 +43,63 @@ class TmdbMovieDetailsRepository {
         title: String,
         releaseYear: Int?,
     ): MovieDetailsBundle? {
-        if (!TmdbClient.isConfigured) return null
+        if (!TmdbClient.isConfigured) {
+            Log.w(TAG, "TMDB not configured (BuildConfig.TMDB_BEARER_TOKEN is blank)")
+            return null
+        }
         val now = System.currentTimeMillis()
         val cached = cache[channelId]
         if (cached != null && now - cached.fetchedAt < CACHE_TTL_MS) {
+            Log.i(TAG, "cache hit for $channelId")
             return cached.bundle
         }
 
         val bundle = runCatching {
             withContext(Dispatchers.IO) { fetchFresh(title, releaseYear) }
         }.getOrElse {
-            Log.w(TAG, "TMDB movie lookup failed for \"$title\"", it)
+            Log.w(TAG, "TMDB movie lookup threw for \"$title\"", it)
             return null
         }
 
-        if (bundle != null) cache[channelId] = CacheEntry(bundle, now)
+        if (bundle != null) {
+            cache[channelId] = CacheEntry(bundle, now)
+            Log.i(TAG, "cached bundle for $channelId tmdbId=${bundle.tmdbId}")
+        } else {
+            Log.i(TAG, "fetchFresh returned null for \"$title\" year=$releaseYear")
+        }
         return bundle
     }
 
     private suspend fun fetchFresh(title: String, releaseYear: Int?): MovieDetailsBundle? {
-        // Feed TMDB the raw title first. If that returns nothing, retry with the matcher's
-        // normalised form — which strips Xtream quality/country prefixes that would
-        // otherwise confuse TMDB's search.
         val query = title.trim()
+        Log.i(TAG, "searchMovie query=\"$query\" year=$releaseYear")
         val searchResults = runCatching {
             TmdbClient.api.searchMovie(query = query, year = releaseYear)
-        }.getOrNull()?.results.orEmpty()
+        }.onFailure { Log.w(TAG, "searchMovie #1 threw", it) }
+            .getOrNull()?.results.orEmpty()
+        Log.i(TAG, "searchMovie #1 returned ${searchResults.size} results")
 
         val candidates = if (searchResults.isNotEmpty()) searchResults
         else {
             val normalised = TmdbCatalogueMatcher.normalize(query)
-            if (normalised.isBlank() || normalised == query) emptyList()
-            else runCatching {
-                TmdbClient.api.searchMovie(query = normalised, year = releaseYear)
-            }.getOrNull()?.results.orEmpty()
+            if (normalised.isBlank() || normalised == query) {
+                emptyList()
+            } else {
+                Log.i(TAG, "retry searchMovie normalised=\"$normalised\"")
+                runCatching {
+                    TmdbClient.api.searchMovie(query = normalised, year = releaseYear)
+                }.onFailure { Log.w(TAG, "searchMovie retry threw", it) }
+                    .getOrNull()?.results.orEmpty()
+                    .also { Log.i(TAG, "retry returned ${it.size} results") }
+            }
         }
 
         val hit = candidates.firstOrNull() ?: return null
+        Log.i(TAG, "top hit tmdbId=${hit.id} title=\"${hit.title}\" date=${hit.releaseDate}")
         val details = runCatching {
             TmdbClient.api.getMovieDetails(hit.id)
-        }.getOrNull() ?: return null
+        }.onFailure { Log.w(TAG, "getMovieDetails threw for ${hit.id}", it) }
+            .getOrNull() ?: return null
 
         return MovieDetailsBundle(
             tmdbId = hit.id,
@@ -117,6 +139,70 @@ class TmdbMovieDetailsRepository {
             }
         }
         return youtube.minByOrNull(priority)?.key ?: videos.firstOrNull { it.site.equals("YouTube", true) }?.key
+    }
+
+    /**
+     * Normalised title → channel lookup for the MOVIE catalogue. Built lazily on first
+     * use and then reused for every subsequent detail open in this process, avoiding the
+     * 40+ second full-table scan + normalisation that was happening per-screen. Mutex
+     * prevents two concurrent detail opens both triggering the build.
+     */
+    @Volatile private var movieIndex: Map<String, Channel>? = null
+    private val indexBuildMutex = Mutex()
+
+    /**
+     * Match a TMDB "similar" list against the user's movie catalogue. Returns only titles
+     * they can actually play, in TMDB order. Uses a cached normalised-title index so the
+     * match is O(n) where n = similar.size, not O(catalogue × similar).
+     */
+    suspend fun matchSimilar(
+        similar: List<TmdbMovieItem>,
+        excludeChannelId: String,
+        dao: ChannelDao,
+    ): List<Channel> {
+        if (similar.isEmpty()) return emptyList()
+        val index = getOrBuildMovieIndex(dao)
+        if (index.isEmpty()) return emptyList()
+        val seen = HashSet<String>()
+        return similar.mapNotNull { item ->
+            listOfNotNull(item.title, item.originalTitle)
+                .firstNotNullOfOrNull { t ->
+                    val key = TmdbCatalogueMatcher.normalize(t)
+                    if (key.isEmpty()) null else index[key]
+                }
+                ?.takeIf { it.id != excludeChannelId && seen.add(it.id) }
+        }
+    }
+
+    private suspend fun getOrBuildMovieIndex(dao: ChannelDao): Map<String, Channel> {
+        movieIndex?.let { return it }
+        return indexBuildMutex.withLock {
+            // Double-check after acquiring the lock — another caller may have built it
+            // while we were waiting.
+            movieIndex?.let { return@withLock it }
+            withContext(Dispatchers.Default) {
+                val started = System.currentTimeMillis()
+                val rows = dao.getChannelsByType("MOVIE")
+                val index = HashMap<String, Channel>(rows.size)
+                rows.forEach { row ->
+                    val ch = row.toDomain()
+                    val key = TmdbCatalogueMatcher.normalize(ch.name)
+                    if (key.isNotEmpty()) index.putIfAbsent(key, ch)
+                }
+                Log.i(
+                    TAG,
+                    "built movie index size=${index.size} from ${rows.size} rows " +
+                        "in ${System.currentTimeMillis() - started} ms",
+                )
+                movieIndex = index
+                index
+            }
+        }
+    }
+
+    /** Force a rebuild on the next match call — invoked after a catalogue refresh. */
+    fun invalidateMovieIndex() {
+        movieIndex = null
     }
 
     data class MovieDetailsBundle(
