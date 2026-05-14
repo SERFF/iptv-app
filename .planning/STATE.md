@@ -1,3 +1,9 @@
+---
+milestone: v1.0
+milestone_name: Netflix-feel
+current_phase: 1
+---
+
 # Project State
 
 ## Project Reference
@@ -5,11 +11,11 @@
 See: `.planning/PROJECT.md` (updated 2026-05-14)
 
 **Core value:** Premium tv-kijkervaring op een D-pad remote — Netflix-niveau home/detail/player op Android TV.
-**Current focus:** Milestone "Netflix-feel" — Phase 1 (Hero auto-trailer)
+**Current focus:** Milestone v1.0 "Netflix-feel" — Phase 1 (Hero auto-trailer)
 
 ## Milestone
 
-**Netflix-feel** — 7 phases, 17 requirements
+**v1.0 — Netflix-feel** — 7 phases, 17 requirements
 
 ## Roadmap Pointer
 

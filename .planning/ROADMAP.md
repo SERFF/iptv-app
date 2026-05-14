@@ -1,4 +1,6 @@
-# Roadmap — Netflix-feel Milestone
+# Roadmap
+
+## 🚧 **v1.0 — Netflix-feel**
 
 ## Summary
 
@@ -16,13 +18,13 @@
 
 ---
 
-## Phase 1 — Hero auto-trailer + "More Info" knop
+## Phase 1: Hero auto-trailer + "More Info" knop
 
 **Goal:** Hero-carousel toont na 2.5s een muted YouTube-trailer (via TMDB trailer key) in plaats van Ken Burns backdrop, met "More Info" focus-target naast Play.
 
 **Requirements:** HERO-01, HERO-02
 
-**Success criteria:**
+**Success Criteria:**
 1. Bij hero-rotation: na 2.5s start trailer muted; bij focus-loss/wissel stopt trailer.
 2. Bij ladingsfout/geen trailer: fallback naar bestaande Ken Burns backdrop, geen crash.
 3. "More Info" knop is bereikbaar via D-pad rechts vanaf Play; activeert detail-route.
@@ -35,13 +37,13 @@
 
 ---
 
-## Phase 2 — Rail hover-preview
+## Phase 2: Rail hover-preview
 
 **Goal:** Rail-items in alle home-rails expandren tot popover op focus-idle, met hero-backdrop swap.
 
 **Requirements:** RAIL-01, RAIL-02
 
-**Success criteria:**
+**Success Criteria:**
 1. D-pad focus + 700ms idle → popover zichtbaar (scale 1.18, glow border, content-fade).
 2. Focus-loss binnen 700ms toont GEEN popover (geen flicker bij snelle scroll).
 3. Hero-backdrop crossfade naar focused item's backdrop URL.
@@ -54,13 +56,13 @@
 
 ---
 
-## Phase 3 — Profielkiezer op cold start + avatars
+## Phase 3: Profielkiezer op cold start + avatars
 
 **Goal:** Cold-start splash routert naar profielkiezer wanneer >1 profiel; profielen krijgen emoji/avatar.
 
 **Requirements:** PROF-01, PROF-02
 
-**Success criteria:**
+**Success Criteria:**
 1. Bij >1 profiel + geen recente sessie (<8u): Splash → ProfilePickerScreen → Channels.
 2. Bij 1 profiel: directe route naar Channels (geen extra scherm).
 3. Profielen kunnen emoji ingesteld krijgen via bestaand Profiles-scherm.
@@ -73,13 +75,13 @@
 
 ---
 
-## Phase 4 — Detail-page expand + betere typografie
+## Phase 4: Detail-page expand + betere typografie
 
 **Goal:** Detail-screens openen met fullbleed-animatie en scrollable body met duidelijke secties.
 
 **Requirements:** DET-01, DET-02, DET-03
 
-**Success criteria:**
+**Success Criteria:**
 1. Bij detail-open: poster/backdrop animeert van rail-positie naar fullbleed (Crossfade/LookaheadLayout, ~300ms).
 2. Body scrollt verticaal met sticky header (titel + Play); D-pad up/down werkt zonder focus-trap.
 3. Sectiekopjes "Verhaal", "Cast", "Vergelijkbaar" duidelijk leesbaar tegen backdrop-scrim.
@@ -92,13 +94,13 @@
 
 ---
 
-## Phase 5 — Skip Intro + Episode artwork + uitgebreide next-episode card
+## Phase 5: Skip Intro + Episode artwork + uitgebreide next-episode card
 
 **Goal:** Player krijgt Skip Intro knop, series-grid krijgt episode-thumbnails, next-episode card wordt visueel rijker.
 
 **Requirements:** PLAY-01, SERIE-01, SERIE-02
 
-**Success criteria:**
+**Success Criteria:**
 1. Bij SERIES-episode + positie 0-90s: "Skip Intro" knop zichtbaar; center-click jumpt naar 90s.
 2. Skip Intro verschijnt NIET voor MOVIE/TV content.
 3. Series-detail grid toont per-episode thumbnail (TMDB still of fallback series-cover); geen lege placeholders.
@@ -111,13 +113,13 @@
 
 ---
 
-## Phase 6 — Genre rails + "Nieuw toegevoegd" + Trending
+## Phase 6: Genre rails + "Nieuw toegevoegd" + Trending
 
 **Goal:** Drie nieuwe data-gedreven rails op home: Trending (TMDB), Nieuw (lokaal), Genre-rails (TMDB genres).
 
 **Requirements:** DISC-01, DISC-02, DISC-03
 
-**Success criteria:**
+**Success Criteria:**
 1. "Trending deze week" rail toont min. 5 items wanneer TMDB-token configured én catalog overlap aanwezig is.
 2. "Nieuw in je catalogus" rail toont items toegevoegd in laatste 14 dagen op basis van `addedAt`.
 3. Genre-rails ("Actie", "Komedie", "Drama") tonen channels uit dezelfde genre-tag; aantal rails configurable in Settings.
@@ -130,13 +132,13 @@
 
 ---
 
-## Phase 7 — "Omdat je X keek" + Watchlist
+## Phase 7: "Omdat je X keek" + Watchlist
 
 **Goal:** Personalisatie-rail per recent-finished title; Watchlist als aparte verzameling naast Favorites.
 
 **Requirements:** PERS-01, PERS-02
 
-**Success criteria:**
+**Success Criteria:**
 1. Bij ≥1 recent-finished movie (positionMs/durationMs > 0.9): "Omdat je [Title] keek" rail toont matched similar-titles uit catalogus.
 2. Max 2 "Omdat je X keek"-rails zichtbaar tegelijk; rotation bij volgende home-load.
 3. "Bewaar voor later" knop op MovieDetail + SeriesDetail; click voegt toe aan Watchlist.
