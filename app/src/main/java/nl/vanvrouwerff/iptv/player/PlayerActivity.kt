@@ -75,6 +75,8 @@ class PlayerActivity : ComponentActivity() {
     // Overlay state wired into the Compose layer. Mutated from onKeyDown / Player.Listener
     // so the UI updates without us having to push through a StateFlow for every tick.
     private var bannerChannel by mutableStateOf<Channel?>(null)
+    /** Compose-observable ContentType of the currently playing item; drives Skip Intro. */
+    private var currentChannelType by mutableStateOf<ContentType?>(null)
     private var bannerNowPlaying by mutableStateOf<String?>(null)
     private var bannerNext by mutableStateOf<String?>(null)
     private var bannerChannelNumber by mutableStateOf<Int?>(null)
@@ -150,6 +152,7 @@ class PlayerActivity : ComponentActivity() {
                     statsOverlayVisible = statsOverlayVisible,
                     statsSnapshot = statsSnapshot,
                     nextEpisode = nextEpisodeInfo,
+                    isSeriesEpisode = currentChannelType == ContentType.SERIES,
                     onPlayerViewReady = { view ->
                         playerViewRef = view
                         view.setControllerVisibilityListener(
@@ -454,6 +457,7 @@ class PlayerActivity : ComponentActivity() {
         saveCurrentProgress()
         if (index != currentIndex) previousIndex = currentIndex
         currentIndex = index
+        currentChannelType = channel.type
         errorOverlay = null
         // Channel change resets the auto-retry budget: a dead stream on the previous
         // channel must not consume the budget for this new stream.

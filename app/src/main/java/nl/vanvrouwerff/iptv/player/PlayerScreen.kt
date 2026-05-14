@@ -84,6 +84,7 @@ fun PlayerScreen(
     statsOverlayVisible: Boolean,
     statsSnapshot: StatsSnapshot?,
     nextEpisode: NextEpisodeInfo?,
+    isSeriesEpisode: Boolean = false,
     onPlayerViewReady: (PlayerView) -> Unit,
     onDismissTracks: () -> Unit,
     onDismissStats: () -> Unit,
@@ -302,8 +303,74 @@ fun PlayerScreen(
                 )
             }
         }
+
+        // Skip Intro — pure time-heuristic: visible during the first 90s of any series
+        // episode, hidden afterwards. No ML, just a sensible default cutoff for the
+        // intro/recap window most shows use. Auto-fades after the user has had ~12s to
+        // notice it so the bare-button mode doesn't obstruct the bottom-right action area.
+        SkipIntroOverlay(
+            playerProvider = playerProvider,
+            isSeriesEpisode = isSeriesEpisode,
+            errorVisible = errorState != null,
+            nextEpisodeVisible = nextEpisode != null,
+            modifier = Modifier.align(Alignment.BottomEnd),
+        )
     }
 }
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun SkipIntroOverlay(
+    playerProvider: () -> ExoPlayer?,
+    isSeriesEpisode: Boolean,
+    errorVisible: Boolean,
+    nextEpisodeVisible: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    if (!isSeriesEpisode) return
+
+    var positionMs by remember { mutableStateOf(0L) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            positionMs = playerProvider()?.currentPosition ?: 0L
+            if (positionMs >= SKIP_INTRO_WINDOW_MS) break
+            kotlinx.coroutines.delay(500L)
+        }
+    }
+    var manuallyDismissed by remember { mutableStateOf(false) }
+
+    val visible = !errorVisible &&
+        !nextEpisodeVisible &&
+        !manuallyDismissed &&
+        positionMs in 1L until SKIP_INTRO_WINDOW_MS
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(240)),
+        exit = fadeOut(tween(220)),
+        modifier = modifier.padding(end = 48.dp, bottom = 110.dp),
+    ) {
+        androidx.tv.material3.Button(
+            onClick = {
+                playerProvider()?.seekTo(SKIP_INTRO_WINDOW_MS)
+                manuallyDismissed = true
+            },
+            colors = androidx.tv.material3.ButtonDefaults.colors(
+                containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.85f),
+                contentColor = androidx.compose.ui.graphics.Color.White,
+                focusedContainerColor = IptvPalette.Accent,
+                focusedContentColor = androidx.compose.ui.graphics.Color.White,
+            ),
+        ) {
+            androidx.tv.material3.Text(
+                text = stringResource(R.string.player_skip_intro),
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
+private const val SKIP_INTRO_WINDOW_MS: Long = 90_000L
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
