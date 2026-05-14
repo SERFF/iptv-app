@@ -117,6 +117,8 @@ dependencies {
 
     implementation(libs.work.runtime.ktx)
 
+    implementation(libs.youtube.player.core)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }

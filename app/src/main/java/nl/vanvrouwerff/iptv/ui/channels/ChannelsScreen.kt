@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -52,6 +53,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
@@ -83,9 +85,12 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
+import nl.vanvrouwerff.iptv.IptvApp
 import nl.vanvrouwerff.iptv.R
 import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
+import nl.vanvrouwerff.iptv.data.tmdb.TmdbCatalogueMatcher
+import nl.vanvrouwerff.iptv.data.tmdb.TmdbClient
 import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
 
 /**
@@ -100,6 +105,9 @@ private const val HERO_ROTATE_MS: Long = 9_000L
 
 /** Full cycle for the Ken-Burns zoom — long enough to feel stately, not hypnotic. */
 private const val KEN_BURNS_CYCLE_MS: Int = 12_000
+
+/** Idle delay before a MOVIE hero swaps its Ken Burns backdrop for a muted YouTube trailer. */
+private const val HERO_TRAILER_DELAY_MS: Long = 2_500L
 
 private data class TypeTab(val type: ContentType, val labelRes: Int, val emptyRes: Int)
 
@@ -116,6 +124,7 @@ fun ChannelsScreen(
     onOpenProfiles: () -> Unit,
     onPlay: (Channel, List<Channel>) -> Unit,
     onPlayDirect: (Channel) -> Unit,
+    onOpenDetail: (Channel) -> Unit,
     vm: ChannelsViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsState()
@@ -158,6 +167,7 @@ fun ChannelsScreen(
                     onRefresh = vm::refresh,
                     onPlay = onPlay,
                     onPlayDirect = onPlayDirect,
+                    onOpenDetail = onOpenDetail,
                     onSetManaging = vm::setManagingFavorites,
                     onToggleFavorite = vm::toggleFavorite,
                     onSearchChange = vm::setSearchQuery,
@@ -196,6 +206,7 @@ private fun NetflixLayout(
     onRefresh: () -> Unit,
     onPlay: (Channel, List<Channel>) -> Unit,
     onPlayDirect: (Channel) -> Unit,
+    onOpenDetail: (Channel) -> Unit,
     onSetManaging: (Boolean) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onSearchChange: (String) -> Unit,
@@ -425,7 +436,14 @@ private fun RailsView(
                         lastWatchedId = state.lastWatchedId,
                         nowPlayingByEpgId = state.nowPlayingByEpgId,
                         progressById = state.progressById,
-                        onPlay = { ch -> onPlay(ch, state.playableChannels) },
+                        onPlay = { ch ->
+                            when (ch.type) {
+                                ContentType.TV -> onPlay(ch, state.playableChannels)
+                                ContentType.MOVIE -> onPlayDirect(ch)
+                                ContentType.SERIES -> onOpenDetail(ch)
+                            }
+                        },
+                        onMoreInfo = onOpenDetail,
                     )
                 }
                 items(rails, key = { it.title }) { rail ->
@@ -1288,6 +1306,7 @@ private fun HeroCarousel(
     nowPlayingByEpgId: Map<String, String>,
     progressById: Map<String, Float>,
     onPlay: (Channel) -> Unit,
+    onMoreInfo: (Channel) -> Unit,
 ) {
     if (heroes.isEmpty()) return
     // Single focus requester shared across rotations so the Play button keeps focus.
@@ -1334,6 +1353,7 @@ private fun HeroCarousel(
                 progressFraction = progressById[channel.id],
                 focusRequester = focusRequester,
                 onPlay = { onPlay(channel) },
+                onMoreInfo = { onMoreInfo(channel) },
             )
         }
         if (heroes.size > 1) {
@@ -1378,6 +1398,7 @@ private fun HeroBanner(
     progressFraction: Float?,
     focusRequester: FocusRequester? = null,
     onPlay: () -> Unit,
+    onMoreInfo: () -> Unit = {},
 ) {
     // Single-hero fallback path (TV tab): create a local requester + focus on first
     // composition so the original TV-tab behaviour (focus the Play button) still works.
@@ -1398,6 +1419,32 @@ private fun HeroBanner(
             repeatMode = RepeatMode.Reverse,
         ),
         label = "ken-burns-scale",
+    )
+
+    // Trailer state — after a short idle window on a MOVIE hero we crossfade the Ken Burns
+    // backdrop into a muted YouTube trailer. Falls back silently if TMDB has no key or the
+    // YouTube player errors out.
+    var trailerKey by remember(channel.id) { mutableStateOf<String?>(null) }
+    var trailerActive by remember(channel.id) { mutableStateOf(false) }
+    if (channel.type == ContentType.MOVIE && TmdbClient.isConfigured) {
+        LaunchedEffect(channel.id) {
+            val bundle = runCatching {
+                IptvApp.get().tmdbMovieDetails.lookupMovie(
+                    channelId = channel.id,
+                    title = TmdbCatalogueMatcher.normalize(channel.name).ifBlank { channel.name },
+                    releaseYear = null,
+                )
+            }.getOrNull()
+            val key = bundle?.trailerYoutubeKey ?: return@LaunchedEffect
+            trailerKey = key
+            kotlinx.coroutines.delay(HERO_TRAILER_DELAY_MS)
+            trailerActive = true
+        }
+    }
+    val trailerAlpha by animateFloatAsState(
+        targetValue = if (trailerActive && trailerKey != null) 1f else 0f,
+        animationSpec = tween(600),
+        label = "hero-trailer-alpha",
     )
 
     BoxWithConstraints(
@@ -1441,6 +1488,16 @@ private fun HeroBanner(
                             .size(width = 360.dp, height = 220.dp),
                     )
                 }
+            }
+        }
+
+        if (trailerKey != null && trailerAlpha > 0f) {
+            Box(modifier = Modifier.fillMaxSize().alpha(trailerAlpha)) {
+                HeroTrailerPlayer(
+                    youtubeKey = trailerKey!!,
+                    modifier = Modifier.fillMaxSize(),
+                    onError = { trailerActive = false },
+                )
             }
         }
 
@@ -1524,20 +1581,45 @@ private fun HeroBanner(
                 }
             }
             Spacer(Modifier.height(20.dp))
-            Button(
-                onClick = onPlay,
-                modifier = Modifier.focusRequester(activeFocus),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.padding(start = 10.dp).size(22.dp),
-                )
-                Text(
-                    text = heroCtaLabel(channel.type, progressFraction),
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = onPlay,
+                    modifier = Modifier.focusRequester(activeFocus),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.padding(start = 10.dp).size(22.dp),
+                    )
+                    Text(
+                        text = heroCtaLabel(channel.type, progressFraction),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                    )
+                }
+                if (channel.type == ContentType.MOVIE) {
+                    Spacer(Modifier.width(12.dp))
+                    Button(
+                        onClick = onMoreInfo,
+                        colors = androidx.tv.material3.ButtonDefaults.colors(
+                            containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.65f),
+                            contentColor = IptvPalette.TextPrimary,
+                            focusedContainerColor = IptvPalette.SurfaceElevated,
+                            focusedContentColor = IptvPalette.TextPrimary,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Info,
+                            contentDescription = null,
+                            modifier = Modifier.padding(start = 10.dp).size(22.dp),
+                        )
+                        Text(
+                            text = stringResource(R.string.hero_more_info),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                        )
+                    }
+                }
             }
         }
     }

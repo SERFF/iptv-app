@@ -503,6 +503,9 @@ class ChannelsViewModel : ViewModel() {
                         rails = d.rails,
                     )
                 }
+                // Warm TMDB cache for the hero rail so the trailer-key is ready when the
+                // hero carousel rotates to a MOVIE item (no per-rotation network stall).
+                app.tmdbHeroPreloader.warm(d.heroes)
             }
             .launchIn(viewModelScope)
 

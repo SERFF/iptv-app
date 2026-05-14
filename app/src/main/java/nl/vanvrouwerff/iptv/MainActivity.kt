@@ -242,6 +242,16 @@ private fun AppRouteHost(
                     }
                 },
                 onPlayDirect = onPlayDirect,
+                onOpenDetail = { channel ->
+                    when (channel.type) {
+                        ContentType.MOVIE -> onRouteChange(Route.MovieDetail(channel.id))
+                        ContentType.SERIES -> {
+                            val raw = channel.id.removePrefix("xt-series:")
+                            onRouteChange(Route.SeriesDetail(raw))
+                        }
+                        ContentType.TV -> Unit
+                    }
+                },
             )
             is Route.MovieDetail -> MovieDetailScreen(
                 channelId = route.channelId,

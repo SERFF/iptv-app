@@ -1,0 +1,46 @@
+package nl.vanvrouwerff.iptv.data.tmdb
+
+import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import nl.vanvrouwerff.iptv.data.Channel
+import nl.vanvrouwerff.iptv.data.ContentType
+
+/**
+ * Warms the [TmdbMovieDetailsRepository] cache ahead of time for the visible hero items so
+ * `trailerYoutubeKey` is available the moment the hero carousel needs it (no network stall
+ * on rotation).
+ *
+ * Fire-and-forget: errors are swallowed — the hero falls back to its Ken Burns backdrop when
+ * the trailer isn't ready in time.
+ */
+class TmdbHeroPreloader(
+    private val movieDetails: TmdbMovieDetailsRepository,
+) {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun warm(heroes: List<Channel>) {
+        heroes.asSequence()
+            .filter { it.type == ContentType.MOVIE }
+            .take(MAX_PRELOAD)
+            .forEach { ch ->
+                scope.launch {
+                    runCatching {
+                        val title = TmdbCatalogueMatcher.normalize(ch.name).ifBlank { ch.name }
+                        movieDetails.lookupMovie(
+                            channelId = ch.id,
+                            title = title,
+                            releaseYear = null,
+                        )
+                    }.onFailure { Log.w(TAG, "preload failed for ${ch.id}", it) }
+                }
+            }
+    }
+
+    companion object {
+        private const val TAG = "TmdbHeroPreloader"
+        private const val MAX_PRELOAD = 5
+    }
+}
