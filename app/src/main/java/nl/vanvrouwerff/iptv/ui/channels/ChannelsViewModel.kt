@@ -274,6 +274,16 @@ class ChannelsViewModel : ViewModel() {
     private val _state = MutableStateFlow(ChannelsUiState())
     val state: StateFlow<ChannelsUiState> = _state.asStateFlow()
 
+    // Hover-focused channel for the hero-backdrop swap (Phase 2). Set when a rail card
+    // gains focus, cleared on focus-loss. Kept separate from `_state` so rapid focus
+    // changes during a scroll don't churn the main UI state.
+    private val _hoverChannel = MutableStateFlow<Channel?>(null)
+    val hoverChannel: StateFlow<Channel?> = _hoverChannel.asStateFlow()
+
+    fun onHoverChannel(channel: Channel?) {
+        _hoverChannel.value = channel
+    }
+
     // Dedicated flows so Room queries only re-subscribe when selection / query actually change.
     private val selectedTypeFlow = MutableStateFlow(ContentType.TV)
     private val searchQueryFlow = MutableStateFlow("")

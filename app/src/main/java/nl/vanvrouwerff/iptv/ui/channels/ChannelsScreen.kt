@@ -128,6 +128,7 @@ fun ChannelsScreen(
     vm: ChannelsViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsState()
+    val hoverChannel by vm.hoverChannel.collectAsState()
 
     Box(
         modifier = Modifier
@@ -161,6 +162,7 @@ fun ChannelsScreen(
 
                 else -> NetflixLayout(
                     state = state,
+                    hoverChannel = hoverChannel,
                     onSelectType = vm::selectType,
                     onOpenSettings = onOpenSettings,
                     onOpenProfiles = onOpenProfiles,
@@ -168,6 +170,7 @@ fun ChannelsScreen(
                     onPlay = onPlay,
                     onPlayDirect = onPlayDirect,
                     onOpenDetail = onOpenDetail,
+                    onHover = vm::onHoverChannel,
                     onSetManaging = vm::setManagingFavorites,
                     onToggleFavorite = vm::toggleFavorite,
                     onSearchChange = vm::setSearchQuery,
@@ -200,6 +203,7 @@ private fun AmbientBackdrop() {
 @Composable
 private fun NetflixLayout(
     state: ChannelsUiState,
+    hoverChannel: Channel?,
     onSelectType: (ContentType) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenProfiles: () -> Unit,
@@ -207,6 +211,7 @@ private fun NetflixLayout(
     onPlay: (Channel, List<Channel>) -> Unit,
     onPlayDirect: (Channel) -> Unit,
     onOpenDetail: (Channel) -> Unit,
+    onHover: (Channel?) -> Unit,
     onSetManaging: (Boolean) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onSearchChange: (String) -> Unit,
@@ -282,6 +287,7 @@ private fun NetflixLayout(
                         )
                     else -> RailsView(
                         state = state,
+                        hoverChannel = hoverChannel,
                         railsListState = railsListState,
                         searchVisible = searchVisible,
                         onCloseSearch = {
@@ -290,6 +296,8 @@ private fun NetflixLayout(
                         },
                         onPlay = onPlay,
                         onPlayDirect = onPlayDirect,
+                        onOpenDetail = onOpenDetail,
+                        onHover = onHover,
                         onSearchChange = onSearchChange,
                         onRememberSearch = onRememberSearch,
                         onClearRecents = onClearRecents,
@@ -358,12 +366,15 @@ private fun KeyHintStrip(
 @Composable
 private fun RailsView(
     state: ChannelsUiState,
+    hoverChannel: Channel? = null,
     railsListState: androidx.tv.foundation.lazy.list.TvLazyListState =
         androidx.tv.foundation.lazy.list.rememberTvLazyListState(),
     searchVisible: Boolean = false,
     onCloseSearch: () -> Unit = {},
     onPlay: (Channel, List<Channel>) -> Unit,
     onPlayDirect: (Channel) -> Unit,
+    onOpenDetail: (Channel) -> Unit = {},
+    onHover: (Channel?) -> Unit = {},
     onSearchChange: (String) -> Unit,
     onRememberSearch: () -> Unit = {},
     onClearRecents: () -> Unit = {},
@@ -433,6 +444,7 @@ private fun RailsView(
                 item {
                     HeroCarousel(
                         heroes = heroes,
+                        hoverChannel = hoverChannel,
                         lastWatchedId = state.lastWatchedId,
                         nowPlayingByEpgId = state.nowPlayingByEpgId,
                         progressById = state.progressById,
@@ -451,6 +463,7 @@ private fun RailsView(
                         rail = rail,
                         contentType = state.selectedType,
                         progressById = state.progressById,
+                        onHover = onHover,
                         nowPlayingByEpgId = state.nowPlayingByEpgId,
                         onPlay = { ch ->
                             if (rail.isDirectPlay) {
@@ -1302,6 +1315,7 @@ private fun SettingsChip(onClick: () -> Unit) {
 @Composable
 private fun HeroCarousel(
     heroes: List<Channel>,
+    hoverChannel: Channel? = null,
     lastWatchedId: String?,
     nowPlayingByEpgId: Map<String, String>,
     progressById: Map<String, Float>,
@@ -1694,6 +1708,7 @@ private fun RailRow(
     progressById: Map<String, Float>,
     nowPlayingByEpgId: Map<String, String> = emptyMap(),
     onPlay: (Channel) -> Unit,
+    onHover: ((Channel?) -> Unit)? = null,
 ) {
     // Populair-nu morphs into the Netflix-style Top 10 treatment when we have at least 3
     // matches, with the oversized numeral to the left of each poster. The cutoff keeps the
@@ -1760,6 +1775,7 @@ private fun RailRow(
                                 channel = channel,
                                 progressFraction = progress,
                                 onClick = { onPlay(channel) },
+                                onHover = onHover,
                             )
                     }
                 }
@@ -1912,8 +1928,14 @@ private fun PosterCard(
     channel: Channel,
     progressFraction: Float?,
     onClick: () -> Unit,
+    onHover: ((Channel?) -> Unit)? = null,
 ) {
-    FocusableCard(width = 168.dp, height = 252.dp, onClick = onClick) { focused ->
+    FocusableCard(
+        width = 168.dp,
+        height = 252.dp,
+        onClick = onClick,
+        onFocusChange = { focused -> onHover?.invoke(if (focused) channel else null) },
+    ) { focused ->
         Box(modifier = Modifier.fillMaxSize().background(IptvPalette.SurfaceElevated)) {
             if (channel.logoUrl != null) {
                 AsyncImage(
@@ -2003,9 +2025,11 @@ private fun FocusableCard(
     width: Dp,
     height: Dp,
     onClick: () -> Unit,
+    onFocusChange: ((Boolean) -> Unit)? = null,
     content: @Composable (focused: Boolean) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
+    LaunchedEffect(focused) { onFocusChange?.invoke(focused) }
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.08f else 1f,
         animationSpec = spring(
