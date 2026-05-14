@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TmdbPopularCacheEntity::class,
         ProfileEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = false,
 )
 abstract class IptvDatabase : RoomDatabase() {
@@ -69,6 +69,21 @@ abstract class IptvDatabase : RoomDatabase() {
          *    place, so we create the new table, copy rows over assigning the default
          *    profile, drop the old table, and rename.
          */
+        /**
+         * v10 → v11: track when each channel first appeared in the catalogue so the home
+         * screen can surface a "Nieuw in je catalogus" rail. Pre-existing rows get a
+         * timestamp 30 days in the past so they DON'T pollute the "new" rail on first run
+         * after upgrade; freshly added items get a current timestamp via the refresh path.
+         */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val thirtyDaysAgo = System.currentTimeMillis() - 30L * 24 * 3600 * 1000
+                db.execSQL("ALTER TABLE channels ADD COLUMN addedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE channels SET addedAt = $thirtyDaysAgo")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_channels_addedAt ON channels(addedAt)")
+            }
+        }
+
         /**
          * v9 → v10: optional emoji-avatar override for profiles. Existing rows keep their
          * colour-and-initial tile (avatarEmoji NULL). Phase 3 (profile picker on cold start).
@@ -229,7 +244,7 @@ abstract class IptvDatabase : RoomDatabase() {
                     .addMigrations(
                         MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                         MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-                        MIGRATION_8_9, MIGRATION_9_10,
+                        MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
                     )
                     .addCallback(object : RoomDatabase.Callback() {
                         // Fresh installs skip migrations entirely — Room just builds tables

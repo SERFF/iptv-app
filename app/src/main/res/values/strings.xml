@@ -94,6 +94,7 @@
     <string name="profile_picker_title">Wie kijkt er?</string>
     <string name="detail_section_overview">Verhaal</string>
     <string name="player_skip_intro">Intro overslaan</string>
+    <string name="rail_recently_added">Nieuw in je catalogus</string>
 
     <string name="error_generic">Er ging iets mis.</string>
     <string name="error_retry">Opnieuw proberen</string>

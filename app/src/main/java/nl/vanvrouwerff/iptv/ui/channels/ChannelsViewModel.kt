@@ -92,6 +92,8 @@ data class ChannelsUiState(
      * Mirrors [popularSeries]: only populated when the Movies tab is active.
      */
     val popularMovies: List<Channel> = emptyList(),
+    /** "Nieuw in je catalogus" — items added in the past 14 days (Phase 6). */
+    val recentlyAdded: List<Channel> = emptyList(),
     val managingFavorites: Boolean = false,
     val recentSearches: List<String> = emptyList(),
     val error: String? = null,
@@ -323,6 +325,15 @@ class ChannelsViewModel : ViewModel() {
         selectedTypeFlow
             .flatMapLatest { type -> categoriesByType.getValue(type) }
             .onEach { cats -> _state.update { it.copy(categories = cats) } }
+            .launchIn(viewModelScope)
+
+        // "Nieuw in je catalogus": observe channels added in the last 14 days. Window is
+        // computed once at subscription — fine since the rail is informative, not strict.
+        val cutoff = System.currentTimeMillis() - RECENTLY_ADDED_WINDOW_MS
+        dao.observeRecentlyAdded(cutoff = cutoff, limit = 30)
+            .map { rows -> rows.map { it.toDomain() } }
+            .flowOn(Dispatchers.Default)
+            .onEach { items -> _state.update { it.copy(recentlyAdded = items) } }
             .launchIn(viewModelScope)
 
         // Search results for the current tab, debounced so we don't hit Room on every keystroke.
@@ -667,6 +678,8 @@ class ChannelsViewModel : ViewModel() {
         const val EPG_TICK_MS = 60_000L
         // Catalogue cache older than this triggers an automatic refresh; newer is reused.
         const val FRESH_THRESHOLD_MS: Long = 6L * 3_600_000L
+        // Window for "Nieuw in je catalogus" rail — items added within the last 14 days.
+        const val RECENTLY_ADDED_WINDOW_MS: Long = 14L * 24 * 3_600_000L
     }
 }
 

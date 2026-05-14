@@ -49,8 +49,33 @@ interface ChannelDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCategories(categories: List<CategoryEntity>)
 
+    @Query("SELECT id, addedAt FROM channels")
+    suspend fun getAddedAtSnapshot(): List<ChannelAddedAtRow>
+
+    /**
+     * Channels added in the past [windowMs] milliseconds, sorted newest-first, capped to
+     * [limit] rows. Drives the "Nieuw in je catalogus" rail on the home screen.
+     */
+    @Query(
+        "SELECT * FROM channels WHERE addedAt > :cutoff AND streamUrl IS NOT NULL " +
+            "AND type IN ('MOVIE','SERIES') " +
+            "ORDER BY addedAt DESC LIMIT :limit",
+    )
+    fun observeRecentlyAdded(cutoff: Long, limit: Int = 30): Flow<List<ChannelEntity>>
+
     @Transaction
     suspend fun replaceAll(channels: List<ChannelEntity>, categories: List<CategoryEntity>) {
+        // Preserve addedAt across refreshes: a channel that already existed keeps its
+        // original timestamp, only genuinely-new IDs get a fresh `now`. Without this the
+        // "Nieuw in je catalogus" rail would re-flood with every catalogue refresh.
+        val now = System.currentTimeMillis()
+        val existing = getAddedAtSnapshot().associate { it.id to it.addedAt }
+        val merged = channels.map { ch ->
+            val previous = existing[ch.id]
+            if (previous != null && previous > 0L) ch.copy(addedAt = previous)
+            else if (ch.addedAt == 0L) ch.copy(addedAt = now)
+            else ch
+        }
         clearChannels()
         clearCategories()
         insertCategories(categories)
@@ -59,7 +84,7 @@ interface ChannelDao {
         // giant list — measurable GC pressure on the Formuler. Chunking at 1 000 keeps
         // peak allocations low without adding round-trips that matter. Still one outer
         // @Transaction, so Flow observers only fire once on commit.
-        channels.chunked(1000).forEach { insertChannels(it) }
+        merged.chunked(1000).forEach { insertChannels(it) }
     }
 
     @Query("SELECT channelId FROM favorites WHERE profileId = :profileId")

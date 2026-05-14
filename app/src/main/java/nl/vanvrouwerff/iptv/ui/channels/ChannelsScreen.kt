@@ -458,6 +458,20 @@ private fun RailsView(
                         onMoreInfo = onOpenDetail,
                     )
                 }
+                if (state.recentlyAdded.isNotEmpty() && state.selectedType != ContentType.TV) {
+                    item(key = "rail_recently_added") {
+                        RailRow(
+                            rail = Rail(
+                                title = stringResource(R.string.rail_recently_added),
+                                channels = state.recentlyAdded,
+                            ),
+                            contentType = state.selectedType,
+                            progressById = state.progressById,
+                            onHover = onHover,
+                            onPlay = { ch -> onPlay(ch, state.recentlyAdded) },
+                        )
+                    }
+                }
                 items(rails, key = { it.title }) { rail ->
                     RailRow(
                         rail = rail,

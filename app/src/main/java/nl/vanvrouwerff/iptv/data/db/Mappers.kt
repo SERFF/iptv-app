@@ -13,7 +13,10 @@ fun ChannelEntity.toDomain(): Channel = Channel(
     type = runCatching { ContentType.valueOf(type) }.getOrDefault(ContentType.TV),
 )
 
-fun Channel.toEntity(sortIndex: Int): ChannelEntity = ChannelEntity(
+fun Channel.toEntity(
+    sortIndex: Int,
+    addedAt: Long = System.currentTimeMillis(),
+): ChannelEntity = ChannelEntity(
     id = id,
     name = name,
     logoUrl = logoUrl,
@@ -22,4 +25,5 @@ fun Channel.toEntity(sortIndex: Int): ChannelEntity = ChannelEntity(
     epgChannelId = epgChannelId,
     sortIndex = sortIndex,
     type = type.name,
+    addedAt = addedAt,
 )

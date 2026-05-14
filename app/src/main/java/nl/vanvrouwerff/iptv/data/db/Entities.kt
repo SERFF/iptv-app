@@ -6,7 +6,7 @@ import androidx.room.PrimaryKey
 
 @Entity(
     tableName = "channels",
-    indices = [Index("groupTitle"), Index("sortIndex"), Index("type")],
+    indices = [Index("groupTitle"), Index("sortIndex"), Index("type"), Index("addedAt")],
 )
 data class ChannelEntity(
     @PrimaryKey val id: String,
@@ -17,6 +17,8 @@ data class ChannelEntity(
     val epgChannelId: String?,
     val sortIndex: Int,
     val type: String,
+    /** Epoch millis when this row first appeared in the catalogue (preserved across refreshes). */
+    val addedAt: Long = 0L,
 )
 
 @Entity(
@@ -92,6 +94,12 @@ data class WatchedEpisodeEntity(
     val coverUrl: String?,
     val durationSecs: Long,
     val firstWatchedAt: Long,
+)
+
+/** Lightweight projection used by replaceAll() to preserve addedAt across refreshes. */
+data class ChannelAddedAtRow(
+    val id: String,
+    val addedAt: Long,
 )
 
 /** Join row for continue-watching, carrying the progress timestamp for cross-type sort. */
