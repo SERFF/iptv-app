@@ -95,6 +95,9 @@
     <string name="detail_section_overview">Verhaal</string>
     <string name="player_skip_intro">Intro overslaan</string>
     <string name="rail_recently_added">Nieuw in je catalogus</string>
+    <string name="rail_watchlist">Bewaar voor later</string>
+    <string name="detail_save_for_later">Bewaar voor later</string>
+    <string name="detail_remove_from_watchlist">Verwijder van later</string>
 
     <string name="error_generic">Er ging iets mis.</string>
     <string name="error_retry">Opnieuw proberen</string>

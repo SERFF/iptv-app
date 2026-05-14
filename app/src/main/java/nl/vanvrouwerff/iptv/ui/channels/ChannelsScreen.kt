@@ -472,6 +472,20 @@ private fun RailsView(
                         )
                     }
                 }
+                if (state.watchlist.isNotEmpty() && state.selectedType != ContentType.TV) {
+                    item(key = "rail_watchlist") {
+                        RailRow(
+                            rail = Rail(
+                                title = stringResource(R.string.rail_watchlist),
+                                channels = state.watchlist,
+                            ),
+                            contentType = state.selectedType,
+                            progressById = state.progressById,
+                            onHover = onHover,
+                            onPlay = { ch -> onPlay(ch, state.watchlist) },
+                        )
+                    }
+                }
                 items(rails, key = { it.title }) { rail ->
                     RailRow(
                         rail = rail,

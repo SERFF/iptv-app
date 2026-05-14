@@ -94,6 +94,7 @@ fun MovieDetailScreen(
                 state = state,
                 onPlay = { resumeMs -> onPlay(state.channel!!, resumeMs) },
                 onToggleFavorite = vm::toggleFavorite,
+                onToggleWatchlist = vm::toggleWatchlist,
                 onBack = onBack,
                 onPickRelated = onPickRelated,
             )
@@ -108,6 +109,7 @@ private fun DetailBody(
     state: MovieDetailState,
     onPlay: (resumeMs: Long) -> Unit,
     onToggleFavorite: () -> Unit,
+    onToggleWatchlist: () -> Unit,
     onBack: () -> Unit,
     onPickRelated: (Channel) -> Unit,
 ) {
@@ -339,6 +341,29 @@ private fun DetailBody(
                                 stringResource(R.string.icon_desc_bookmark_remove)
                             else
                                 stringResource(R.string.icon_desc_bookmark_add),
+                            modifier = Modifier.padding(start = 10.dp).size(20.dp),
+                        )
+                        Text(
+                            text = label,
+                            modifier = Modifier.padding(start = 8.dp, end = 14.dp, top = 4.dp, bottom = 4.dp),
+                        )
+                    }
+                    Button(
+                        onClick = onToggleWatchlist,
+                        colors = androidx.tv.material3.ButtonDefaults.colors(
+                            containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.65f),
+                            contentColor = IptvPalette.TextPrimary,
+                            focusedContainerColor = IptvPalette.SurfaceElevated,
+                            focusedContentColor = IptvPalette.TextPrimary,
+                        ),
+                    ) {
+                        val label = if (state.inWatchlist)
+                            stringResource(R.string.detail_remove_from_watchlist)
+                        else
+                            stringResource(R.string.detail_save_for_later)
+                        Icon(
+                            imageVector = Icons.Filled.OndemandVideo,
+                            contentDescription = label,
                             modifier = Modifier.padding(start = 10.dp).size(20.dp),
                         )
                         Text(

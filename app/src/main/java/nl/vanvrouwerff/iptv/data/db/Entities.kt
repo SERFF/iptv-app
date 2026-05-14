@@ -58,6 +58,22 @@ data class FavoriteEntity(
     val addedAt: Long,
 )
 
+/**
+ * "Bewaar voor later" list, profile-scoped. Separate from [FavoriteEntity] so the user can
+ * keep a curated favourites list AND a queue of things they intend to watch without the
+ * two sets overlapping. Phase 7.
+ */
+@Entity(
+    tableName = "watchlist",
+    primaryKeys = ["profileId", "channelId"],
+    indices = [Index("profileId")],
+)
+data class WatchlistEntity(
+    val profileId: String,
+    val channelId: String,
+    val addedAt: Long,
+)
+
 @Entity(
     tableName = "watch_progress",
     primaryKeys = ["profileId", "channelId"],

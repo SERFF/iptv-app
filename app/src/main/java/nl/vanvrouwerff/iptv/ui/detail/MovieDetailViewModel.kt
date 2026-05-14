@@ -31,6 +31,8 @@ data class MovieDetailState(
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val isFavorite: Boolean = false,
+    /** Phase 7: in the user's "Bewaar voor later" list. */
+    val inWatchlist: Boolean = false,
     // Rich metadata — all optional; filled in once get_vod_info returns.
     val plot: String? = null,
     val cast: String? = null,
@@ -112,6 +114,12 @@ class MovieDetailViewModel : ViewModel() {
             .map { channelId in it }
             .onEach { fav -> _state.update { it.copy(isFavorite = fav) } }
             .launchIn(viewModelScope)
+
+        activeProfileIdFlow
+            .flatMapLatest { profileId -> dao.observeWatchlistIds(profileId) }
+            .map { channelId in it }
+            .onEach { saved -> _state.update { it.copy(inWatchlist = saved) } }
+            .launchIn(viewModelScope)
     }
 
     fun toggleFavorite() {
@@ -120,6 +128,15 @@ class MovieDetailViewModel : ViewModel() {
         val profileId = activeProfileIdFlow.value
         viewModelScope.launch {
             if (fav) dao.removeFavorite(profileId, id) else dao.addFavorite(profileId, id)
+        }
+    }
+
+    fun toggleWatchlist() {
+        val id = loadedId ?: return
+        val saved = _state.value.inWatchlist
+        val profileId = activeProfileIdFlow.value
+        viewModelScope.launch {
+            if (saved) dao.removeWatchlist(profileId, id) else dao.addWatchlist(profileId, id)
         }
     }
 

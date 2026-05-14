@@ -103,6 +103,32 @@ interface ChannelDao {
     @Query("DELETE FROM favorites WHERE profileId = :profileId AND channelId = :id")
     suspend fun removeFavorite(profileId: String, id: String)
 
+    // ── Watchlist ("Bewaar voor later", Phase 7) ─────────────────────────
+
+    @Query("SELECT channelId FROM watchlist WHERE profileId = :profileId")
+    fun observeWatchlistIds(profileId: String): Flow<List<String>>
+
+    @Query(
+        "INSERT OR IGNORE INTO watchlist (profileId, channelId, addedAt) " +
+            "VALUES (:profileId, :id, :now)",
+    )
+    suspend fun addWatchlist(
+        profileId: String,
+        id: String,
+        now: Long = System.currentTimeMillis(),
+    )
+
+    @Query("DELETE FROM watchlist WHERE profileId = :profileId AND channelId = :id")
+    suspend fun removeWatchlist(profileId: String, id: String)
+
+    @Query(
+        "SELECT c.* FROM channels c " +
+            "JOIN watchlist w ON c.id = w.channelId " +
+            "WHERE w.profileId = :profileId " +
+            "ORDER BY w.addedAt DESC LIMIT 30",
+    )
+    fun observeWatchlistChannels(profileId: String): Flow<List<ChannelEntity>>
+
     @Query("SELECT * FROM channels WHERE id = :id LIMIT 1")
     suspend fun getChannelById(id: String): ChannelEntity?
 

@@ -35,6 +35,7 @@ interface ProfileDao {
         deleteFavoritesFor(id)
         deleteProgressFor(id)
         deleteWatchedEpisodesFor(id)
+        deleteWatchlistFor(id)
         deleteProfile(id)
     }
 
@@ -49,4 +50,7 @@ interface ProfileDao {
 
     @Query("DELETE FROM watched_episodes WHERE profileId = :id")
     suspend fun deleteWatchedEpisodesFor(id: String)
+
+    @Query("DELETE FROM watchlist WHERE profileId = :id")
+    suspend fun deleteWatchlistFor(id: String)
 }

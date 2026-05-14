@@ -94,6 +94,8 @@ data class ChannelsUiState(
     val popularMovies: List<Channel> = emptyList(),
     /** "Nieuw in je catalogus" — items added in the past 14 days (Phase 6). */
     val recentlyAdded: List<Channel> = emptyList(),
+    /** "Bewaar voor later" — profile-scoped watchlist (Phase 7). */
+    val watchlist: List<Channel> = emptyList(),
     val managingFavorites: Boolean = false,
     val recentSearches: List<String> = emptyList(),
     val error: String? = null,
@@ -334,6 +336,14 @@ class ChannelsViewModel : ViewModel() {
             .map { rows -> rows.map { it.toDomain() } }
             .flowOn(Dispatchers.Default)
             .onEach { items -> _state.update { it.copy(recentlyAdded = items) } }
+            .launchIn(viewModelScope)
+
+        // "Bewaar voor later" watchlist — profile-scoped, re-subscribes on profile switch.
+        activeProfileIdFlow
+            .flatMapLatest { profileId -> dao.observeWatchlistChannels(profileId) }
+            .map { rows -> rows.map { it.toDomain() } }
+            .flowOn(Dispatchers.Default)
+            .onEach { items -> _state.update { it.copy(watchlist = items) } }
             .launchIn(viewModelScope)
 
         // Search results for the current tab, debounced so we don't hit Room on every keystroke.
