@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -554,6 +555,7 @@ private fun RailsView(
                     ChannelsUiState.CONTINUE_WATCHING,
                     ChannelsUiState.POPULAR_NOW,
                     ChannelsUiState.MY_LIST,
+                    ChannelsUiState.FAVORITES,
                 )
                 val leadingRails = rails.filter { it.title in leadingTitles }
                 val categoryRails = rails.filter { it.title !in leadingTitles }
@@ -1220,7 +1222,7 @@ private fun TopBar(
                 letterSpacing = 2.sp,
             ),
         )
-        Spacer(Modifier.width(36.dp))
+        Spacer(Modifier.width(24.dp))
         Tabs.forEach { tab ->
             val isSelected = tab.type == selected
             TabPill(
@@ -1316,6 +1318,8 @@ private fun SourceStatusPill(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                softWrap = false,
             )
         }
     }
@@ -1419,8 +1423,10 @@ private fun TabPill(
     ) {
         Text(
             text = label,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
             style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
@@ -1484,10 +1490,11 @@ private fun SettingsChip(onClick: () -> Unit) {
             .scale(scale)
             .onFocusChanged { focused = it.isFocused },
     ) {
-        Text(
-            text = stringResource(R.string.channels_settings_hint),
-            modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp),
-            style = MaterialTheme.typography.labelLarge,
+        Icon(
+            imageVector = Icons.Filled.Settings,
+            contentDescription = stringResource(R.string.channels_settings_hint),
+            tint = if (focused) IptvPalette.TextPrimary else IptvPalette.TextSecondary,
+            modifier = Modifier.padding(10.dp).size(22.dp),
         )
     }
 }

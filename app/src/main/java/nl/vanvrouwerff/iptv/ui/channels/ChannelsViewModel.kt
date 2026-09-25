@@ -128,6 +128,7 @@ data class ChannelsUiState(
     companion object {
         const val UNCATEGORIZED = "Overig"
         const val MY_LIST = "Mijn lijst"
+        const val FAVORITES = "Favorieten"
         const val CONTINUE_WATCHING = "Verder kijken"
         const val POPULAR_NOW = "Populair nu"
         const val MAX_PER_RAIL = 200
@@ -251,13 +252,11 @@ private object ChannelsDerivations {
             if (selectedType == ContentType.MOVIE && popularMovies.isNotEmpty()) {
                 add(Rail(ChannelsUiState.POPULAR_NOW, popularMovies.take(ChannelsUiState.MAX_PER_RAIL)))
             }
-            // Favorites as the first rail on every tab — on TV this is the "Mijn zenders"
-            // shortcut to the user's starred channels, without hiding the rest of the
-            // catalogue behind a manage-mode wall.
             if (favoriteIds.isNotEmpty()) {
                 val favs = inFavoriteOrder(channels, favoriteIds)
                 if (favs.isNotEmpty()) {
-                    add(Rail(ChannelsUiState.MY_LIST, favs.take(ChannelsUiState.MAX_PER_RAIL)))
+                    val title = if (selectedType == ContentType.TV) ChannelsUiState.FAVORITES else ChannelsUiState.MY_LIST
+                    add(Rail(title, favs.take(ChannelsUiState.MAX_PER_RAIL)))
                 }
             }
             val grouped = channels.groupBy { it.groupTitle ?: ChannelsUiState.UNCATEGORIZED }
