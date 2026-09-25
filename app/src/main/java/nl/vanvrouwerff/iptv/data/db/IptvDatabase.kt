@@ -20,8 +20,8 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ProfileEntity::class,
         WatchlistEntity::class,
     ],
-    version = 12,
-    exportSchema = false,
+    version = 14,
+    exportSchema = true,
 )
 abstract class IptvDatabase : RoomDatabase() {
     abstract fun channelDao(): ChannelDao
@@ -74,6 +74,28 @@ abstract class IptvDatabase : RoomDatabase() {
          * v11 → v12: per-profile "Bewaar voor later" watchlist, parallel to favourites.
          * Phase 7.
          */
+        /** v12 → v13: user-sortable favourites. Existing order (time added) is kept. */
+        /**
+         * v13 → v14: films/series have one list ("Mijn lijst" = favourites). Everything the
+         * user saved in "Bewaar voor later" moves into it, appended in the order it was saved.
+         */
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "INSERT OR IGNORE INTO favorites (profileId, channelId, addedAt, position) " +
+                        "SELECT profileId, channelId, addedAt, addedAt FROM watchlist",
+                )
+                db.execSQL("DELETE FROM watchlist")
+            }
+        }
+
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE favorites ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE favorites SET position = addedAt")
+            }
+        }
+
         private val MIGRATION_11_12 = object : Migration(11, 12) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -263,7 +285,7 @@ abstract class IptvDatabase : RoomDatabase() {
                         MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                         MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
                         MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
-                        MIGRATION_11_12,
+                        MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     )
                     .addCallback(object : RoomDatabase.Callback() {
                         // Fresh installs skip migrations entirely — Room just builds tables
@@ -278,7 +300,9 @@ abstract class IptvDatabase : RoomDatabase() {
                             )
                         }
                     })
-                    .fallbackToDestructiveMigration()
+                    // Only pre-v2 databases (no migration path) may be wiped; a forgotten
+                    // future migration must fail loudly instead of silently erasing profiles.
+                    .fallbackToDestructiveMigrationFrom(1)
                     .build()
                     .also { instance = it }
             }

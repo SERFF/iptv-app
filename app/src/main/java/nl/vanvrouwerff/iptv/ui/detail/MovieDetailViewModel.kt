@@ -3,7 +3,11 @@ package nl.vanvrouwerff.iptv.ui.detail
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -31,8 +35,6 @@ data class MovieDetailState(
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val isFavorite: Boolean = false,
-    /** Phase 7: in the user's "Bewaar voor later" list. */
-    val inWatchlist: Boolean = false,
     // Rich metadata — all optional; filled in once get_vod_info returns.
     val plot: String? = null,
     val cast: String? = null,
@@ -48,6 +50,8 @@ data class MovieDetailState(
      * an ACTION_VIEW intent without worrying about the source.
      */
     val trailerUrl: String? = null,
+    /** TMDB landscape backdrop; the detail screen falls back to the poster without it. */
+    val backdropUrl: String? = null,
     /** Up to 10 cast faces from TMDB, ordered by billing. */
     val castList: List<TmdbMovieDetailsRepository.CastEntry> = emptyList(),
     /**
@@ -79,16 +83,26 @@ class MovieDetailViewModel : ViewModel() {
 
     private var loadedId: String? = null
 
-    fun load(channelId: String) {
+    /** Scope of the current [load]; cancelled on the next load so stale results can't land. */
+    private var loadScope: CoroutineScope? = null
+
+    fun load(channelId: String, preview: Channel? = null) {
         if (loadedId == channelId) return
         loadedId = channelId
 
+        loadScope?.cancel()
+        val scope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
+        loadScope = scope
+
         // Reset first so the UI doesn't briefly render stale plot/related from the previous
         // film while the new data is still in flight.
-        _state.value = MovieDetailState(loading = true)
+        // Seed with the card the user clicked so title, artwork and Play render at once;
+        // the Room row and the VOD/TMDB extras fill in behind it.
+        val seed = preview?.takeIf { it.id == channelId }
+        _state.value = MovieDetailState(loading = seed == null, channel = seed)
 
-        viewModelScope.launch {
-            val channel = dao.getChannelById(channelId)?.toDomain()
+        scope.launch {
+            val channel = dao.getChannelById(channelId)?.toDomain() ?: seed
             _state.update { it.copy(channel = channel, loading = false) }
             channel?.let {
                 fetchVodInfo(it)
@@ -107,19 +121,13 @@ class MovieDetailViewModel : ViewModel() {
                     )
                 }
             }
-            .launchIn(viewModelScope)
+            .launchIn(scope)
 
         activeProfileIdFlow
             .flatMapLatest { profileId -> dao.observeFavoriteIds(profileId) }
             .map { channelId in it }
             .onEach { fav -> _state.update { it.copy(isFavorite = fav) } }
-            .launchIn(viewModelScope)
-
-        activeProfileIdFlow
-            .flatMapLatest { profileId -> dao.observeWatchlistIds(profileId) }
-            .map { channelId in it }
-            .onEach { saved -> _state.update { it.copy(inWatchlist = saved) } }
-            .launchIn(viewModelScope)
+            .launchIn(scope)
     }
 
     fun toggleFavorite() {
@@ -128,15 +136,6 @@ class MovieDetailViewModel : ViewModel() {
         val profileId = activeProfileIdFlow.value
         viewModelScope.launch {
             if (fav) dao.removeFavorite(profileId, id) else dao.addFavorite(profileId, id)
-        }
-    }
-
-    fun toggleWatchlist() {
-        val id = loadedId ?: return
-        val saved = _state.value.inWatchlist
-        val profileId = activeProfileIdFlow.value
-        viewModelScope.launch {
-            if (saved) dao.removeWatchlist(profileId, id) else dao.addWatchlist(profileId, id)
         }
     }
 
@@ -214,6 +213,7 @@ class MovieDetailViewModel : ViewModel() {
         _state.update { prev ->
             prev.copy(
                 castList = bundle.cast,
+                backdropUrl = bundle.backdropUrl,
                 trailerUrl = trailer ?: prev.trailerUrl,
             )
         }

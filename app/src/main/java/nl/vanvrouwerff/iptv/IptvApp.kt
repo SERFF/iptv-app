@@ -6,6 +6,7 @@ import coil.ImageLoaderFactory
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,7 +32,11 @@ class IptvApp : Application(), ImageLoaderFactory {
     val settings: SettingsStore by lazy { SettingsStore(this) }
     val database: IptvDatabase by lazy { IptvDatabase.get(this) }
     val refreshUseCase: PlaylistRefreshUseCase by lazy {
-        PlaylistRefreshUseCase(settings, database.channelDao())
+        PlaylistRefreshUseCase(
+            settings = settings,
+            dao = database.channelDao(),
+            onCatalogueChanged = { tmdbMovieDetails.invalidateMovieIndex() },
+        )
     }
     val tmdbPopular: TmdbPopularRepository by lazy {
         TmdbPopularRepository(database.channelDao())
@@ -48,7 +53,7 @@ class IptvApp : Application(), ImageLoaderFactory {
      * active-profile StateFlow hot so any `.value` read elsewhere returns immediately
      * instead of blocking on a first-emit from DataStore.
      */
-    private val appScope = CoroutineScope(SupervisorJob())
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
      * Active profile id as a hot StateFlow. Seeded with the built-in "default" id so

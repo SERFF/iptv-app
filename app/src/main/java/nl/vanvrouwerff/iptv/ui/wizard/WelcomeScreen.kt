@@ -16,6 +16,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -30,11 +34,17 @@ import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
 
 @Composable
 fun WelcomeScreen(onConfigure: () -> Unit) {
+    // A form sent from the phone lands in Instellingen: go there so it can be tested/saved.
+    val phoneSubmission by nl.vanvrouwerff.iptv.data.settings.PhoneSetupServer.submission.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(phoneSubmission) {
+        if (phoneSubmission != null) onConfigure()
+    }
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 64.dp, vertical = 48.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 64.dp, vertical = 36.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.Start,
         ) {
@@ -63,7 +73,7 @@ fun WelcomeScreen(onConfigure: () -> Unit) {
                 ),
             )
 
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(24.dp))
 
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 WizardStep(
@@ -96,17 +106,21 @@ fun WelcomeScreen(onConfigure: () -> Unit) {
                 modifier = Modifier.widthIn(max = 720.dp),
             )
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(20.dp))
 
-            Button(
-                onClick = onConfigure,
-                modifier = Modifier.width(320.dp),
-            ) {
-                Text(
-                    text = stringResource(R.string.wizard_configure),
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    modifier = Modifier.padding(vertical = 4.dp),
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Button(
+                    onClick = onConfigure,
+                    modifier = Modifier.width(320.dp),
+                ) {
+                    Text(
+                        text = stringResource(R.string.wizard_configure),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
+                }
+                Spacer(Modifier.width(40.dp))
+                nl.vanvrouwerff.iptv.ui.settings.PhoneSetupPanel(qrSize = 110.dp)
             }
         }
     }

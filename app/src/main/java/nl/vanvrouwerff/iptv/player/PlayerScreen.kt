@@ -26,6 +26,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -85,9 +86,18 @@ fun PlayerScreen(
     statsSnapshot: StatsSnapshot?,
     nextEpisode: NextEpisodeInfo?,
     isSeriesEpisode: Boolean = false,
+    currentItemId: String? = null,
+    channelList: ChannelListUi? = null,
+    controls: ControlsUi? = null,
+    onPlayPause: () -> Unit = {},
+    onSeekBy: (Long) -> Unit = {},
+    onOpenTracks: () -> Unit = {},
+    onFromStart: () -> Unit = {},
+    onNextEpisode: () -> Unit = {},
+    onControlsInteraction: () -> Unit = {},
+    onSelectChannelGroup: (Int) -> Unit = {},
+    onZapFromList: (ChannelGroup, nl.vanvrouwerff.iptv.data.Channel) -> Unit = { _, _ -> },
     onPlayerViewReady: (PlayerView) -> Unit,
-    onDismissTracks: () -> Unit,
-    onDismissStats: () -> Unit,
     onSelectAspect: (AspectMode) -> Unit,
     onSelectAudio: (trackIndex: Int, groupIndex: Int) -> Unit,
     onSelectSubtitle: (trackIndex: Int?, groupIndex: Int?) -> Unit,
@@ -98,6 +108,7 @@ fun PlayerScreen(
     onPlayNextEpisodeNow: () -> Unit,
     onCancelNextEpisode: () -> Unit,
 ) {
+    var playerViewHandle by remember { mutableStateOf<PlayerView?>(null) }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -106,7 +117,8 @@ fun PlayerScreen(
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
-                    useController = true
+                    // Our own Compose controls (PlayerControlsOverlay) replace Media3's.
+                    useController = false
                     controllerAutoShow = false
                     // Give the controller a few seconds before it auto-hides on pause;
                     // under D-pad navigation that's more forgiving than the 3s default.
@@ -144,6 +156,7 @@ fun PlayerScreen(
                         setBufferedColor(IptvPalette.AccentSoft.copy(alpha = 0.55f).toArgb())
                         setUnplayedColor(Color.White.copy(alpha = 0.28f).toArgb())
                     }
+                    playerViewHandle = this
                     onPlayerViewReady(this)
                 }
             },
@@ -153,7 +166,8 @@ fun PlayerScreen(
                 // When a Compose overlay panel opens, release focus from the PlayerView so
                 // the panel's first focusable Surface can grab it — otherwise D-pad input
                 // keeps hitting the Activity's onKeyDown and never reaches the panel.
-                val panelOpen = tracksOverlayVisible
+                val panelOpen = tracksOverlayVisible || channelList != null || controls != null ||
+                    errorState != null || nextEpisode != null
                 view.isFocusable = !panelOpen
                 view.isFocusableInTouchMode = !panelOpen
                 view.descendantFocusability = if (panelOpen) {
@@ -185,7 +199,7 @@ fun PlayerScreen(
 
         // Top-left: channel info banner.
         AnimatedVisibility(
-            visible = banner != null,
+            visible = banner != null && channelList == null,
             enter = fadeIn(tween(180)) + slideInVertically(tween(200)) { -it / 3 },
             exit = fadeOut(tween(220)) + slideOutVertically(tween(220)) { -it / 3 },
             modifier = Modifier.align(Alignment.TopStart),
@@ -227,27 +241,48 @@ fun PlayerScreen(
             exit = fadeOut(tween(200)),
             modifier = Modifier.align(Alignment.TopEnd),
         ) {
-            statsSnapshot?.let { StatsOverlay(it, onDismiss = onDismissStats) }
+            statsSnapshot?.let { StatsOverlay(it) }
         }
 
-        // Keyhint: surface the "UP / MENU opens panel" shortcut while the Media3 controller
-        // is visible. On live IPTV streams the controller often shows only play + timebar,
-        // so without this hint the user has no way to discover the tracks panel.
+        // Playback controls (VOD: timebar + actions, live: actions).
         AnimatedVisibility(
-            visible = controllerVisible && !tracksOverlayVisible,
-            enter = fadeIn(tween(180)),
-            exit = fadeOut(tween(160)),
-            modifier = Modifier.align(Alignment.BottomCenter),
+            visible = controls != null,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(220)),
+            modifier = Modifier.fillMaxSize(),
         ) {
-            Text(
-                text = stringResource(R.string.player_panel_hint),
-                style = MaterialTheme.typography.labelSmall.copy(color = IptvPalette.TextSecondary),
-                modifier = Modifier
-                    .padding(bottom = 96.dp)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(IptvPalette.BackgroundDeep.copy(alpha = 0.75f))
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-            )
+            controls?.let { ui ->
+                PlayerControlsOverlay(
+                    ui = ui,
+                    playerProvider = playerProvider,
+                    onPlayPause = onPlayPause,
+                    onSeekBy = onSeekBy,
+                    onOpenTracks = onOpenTracks,
+                    onFromStart = onFromStart,
+                    onNextEpisode = onNextEpisode,
+                    onInteraction = onControlsInteraction,
+                )
+            }
+        }
+
+        // Live-TV channel list — left-hand side, full height.
+        AnimatedVisibility(
+            visible = channelList != null,
+            enter = fadeIn(tween(160)),
+            exit = fadeOut(tween(180)),
+            modifier = Modifier.align(Alignment.CenterStart),
+        ) {
+            channelList?.let { ui ->
+                ChannelListOverlay(
+                    groups = ui.groups,
+                    groupIndex = ui.groupIndex,
+                    currentChannelId = ui.currentChannelId,
+                    nowByChannelId = ui.nowByChannelId,
+                    channelNumberOf = ui.channelNumberOf,
+                    onSelectGroup = onSelectChannelGroup,
+                    onZap = onZapFromList,
+                )
+            }
         }
 
         // Tracks panel — right-hand side, vertically centred.
@@ -265,7 +300,6 @@ fun PlayerScreen(
                 onSelectSubtitle = onSelectSubtitle,
                 onSelectAspect = onSelectAspect,
                 onChangeSubtitleDelay = onChangeSubtitleDelay,
-                onDismiss = onDismissTracks,
             )
         }
 
@@ -308,13 +342,18 @@ fun PlayerScreen(
         // episode, hidden afterwards. No ML, just a sensible default cutoff for the
         // intro/recap window most shows use. Auto-fades after the user has had ~12s to
         // notice it so the bare-button mode doesn't obstruct the bottom-right action area.
-        SkipIntroOverlay(
-            playerProvider = playerProvider,
-            isSeriesEpisode = isSeriesEpisode,
-            errorVisible = errorState != null,
-            nextEpisodeVisible = nextEpisode != null,
-            modifier = Modifier.align(Alignment.BottomEnd),
-        )
+        // Keyed on the playing item so the position poll and "dismissed" flag reset when
+        // the player auto-advances to the next episode.
+        key(currentItemId) {
+            SkipIntroOverlay(
+                playerProvider = playerProvider,
+                isSeriesEpisode = isSeriesEpisode,
+                errorVisible = errorState != null,
+                nextEpisodeVisible = nextEpisode != null,
+                onHidden = { playerViewHandle?.requestFocus() },
+                modifier = Modifier.align(Alignment.BottomEnd),
+            )
+        }
     }
 }
 
@@ -325,6 +364,7 @@ private fun SkipIntroOverlay(
     isSeriesEpisode: Boolean,
     errorVisible: Boolean,
     nextEpisodeVisible: Boolean,
+    onHidden: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (!isSeriesEpisode) return
@@ -343,6 +383,18 @@ private fun SkipIntroOverlay(
         !nextEpisodeVisible &&
         !manuallyDismissed &&
         positionMs in 1L until SKIP_INTRO_WINDOW_MS
+    val skipFocus = remember { FocusRequester() }
+    var wasVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(visible) {
+        if (visible) {
+            wasVisible = true
+            kotlinx.coroutines.delay(300)
+            runCatching { skipFocus.requestFocus() }
+        } else if (wasVisible) {
+            wasVisible = false
+            onHidden()
+        }
+    }
 
     AnimatedVisibility(
         visible = visible,
@@ -355,6 +407,7 @@ private fun SkipIntroOverlay(
                 playerProvider()?.seekTo(SKIP_INTRO_WINDOW_MS)
                 manuallyDismissed = true
             },
+            modifier = Modifier.focusRequester(skipFocus),
             colors = androidx.tv.material3.ButtonDefaults.colors(
                 containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.85f),
                 contentColor = androidx.compose.ui.graphics.Color.White,
@@ -586,7 +639,7 @@ private fun NumericOsd(input: String) {
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun StatsOverlay(snapshot: StatsSnapshot, onDismiss: () -> Unit) {
+private fun StatsOverlay(snapshot: StatsSnapshot) {
     Column(
         modifier = Modifier
             .padding(horizontal = 48.dp, vertical = 32.dp)
@@ -634,7 +687,6 @@ private fun TracksOverlay(
     onSelectSubtitle: (trackIndex: Int?, groupIndex: Int?) -> Unit,
     onSelectAspect: (AspectMode) -> Unit,
     onChangeSubtitleDelay: (Long) -> Unit,
-    onDismiss: () -> Unit,
 ) {
     val firstChipFocus = remember { FocusRequester() }
     LaunchedEffect(Unit) {
@@ -688,6 +740,7 @@ private fun TracksOverlay(
             snapshot.audioGroups.flatMapIndexed { gi, group ->
                 group.formats.mapIndexed { ti, fmt ->
                     TrackRowData(
+                        key = "a-$gi-$ti",
                         label = fmt.language ?: fmt.label ?: "Audio",
                         sublabel = listOfNotNull(fmt.codecs, fmt.channelCount.takeIf { it > 0 }?.let { "${it}ch" })
                             .joinToString(" · "),
@@ -705,7 +758,7 @@ private fun TracksOverlay(
                 contentPadding = PaddingValues(vertical = 2.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                items(audioRows, key = { it.label + it.sublabel }) { row -> TrackRow(row) }
+                items(audioRows, key = { it.key }) { row -> TrackRow(row) }
             }
         }
 
@@ -722,6 +775,7 @@ private fun TracksOverlay(
         Spacer(Modifier.height(6.dp))
         val subRows = remember(snapshot) {
             val off = TrackRowData(
+                key = "__off__",
                 label = "",
                 sublabel = "",
                 selected = !snapshot.subtitlesEnabled,
@@ -731,6 +785,7 @@ private fun TracksOverlay(
             listOf(off) + snapshot.subtitleGroups.flatMapIndexed { gi, group ->
                 group.formats.mapIndexed { ti, fmt ->
                     TrackRowData(
+                        key = "s-$gi-$ti",
                         label = fmt.language ?: fmt.label ?: "Ondertitel",
                         sublabel = fmt.codecs.orEmpty(),
                         selected = group.selectedIndex == ti,
@@ -744,7 +799,7 @@ private fun TracksOverlay(
             contentPadding = PaddingValues(vertical = 2.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            items(subRows, key = { (if (it.offRow) "__off__" else it.label + it.sublabel) }) { row ->
+            items(subRows, key = { it.key }) { row ->
                 TrackRow(row)
             }
         }
@@ -894,6 +949,7 @@ private fun EmptyTrackHint(text: String) {
 }
 
 private data class TrackRowData(
+    val key: String,
     val label: String,
     val sublabel: String,
     val selected: Boolean,
@@ -984,6 +1040,8 @@ private fun ErrorOverlay(
     onSkip: () -> Unit,
     onExit: () -> Unit,
 ) {
+    val retryFocus = remember { FocusRequester() }
+    LaunchedEffect(state) { runCatching { retryFocus.requestFocus() } }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1017,7 +1075,7 @@ private fun ErrorOverlay(
             )
             Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = onRetry) {
+                Button(onClick = onRetry, modifier = Modifier.focusRequester(retryFocus)) {
                     Text(
                         stringResource(R.string.player_error_retry),
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
@@ -1041,3 +1099,11 @@ private fun ErrorOverlay(
         }
     }
 }
+
+data class ChannelListUi(
+    val groups: List<ChannelGroup>,
+    val groupIndex: Int,
+    val currentChannelId: String?,
+    val nowByChannelId: Map<String, NowInfo>,
+    val channelNumberOf: (String) -> Int?,
+)

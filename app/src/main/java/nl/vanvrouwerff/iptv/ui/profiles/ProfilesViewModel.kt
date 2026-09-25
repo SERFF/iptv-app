@@ -27,10 +27,16 @@ val ProfileColorChoices: List<Int> = listOf(
     0xFF546E7A.toInt(), // slate
 )
 
+/** Avatar choices; null keeps the colour + initial tile. */
+val ProfileEmojiChoices: List<String?> = listOf(
+    null, "😀", "😎", "🦊", "🐼", "🦁", "🐸", "🦄", "⚽", "🎮", "🎬", "🌟",
+)
+
 data class ProfileRow(
     val id: String,
     val name: String,
     val colorArgb: Int,
+    val avatarEmoji: String?,
     val isActive: Boolean,
     val isDefault: Boolean,
 )
@@ -46,6 +52,7 @@ data class EditingState(
     val id: String?,
     val name: String,
     val colorArgb: Int,
+    val avatarEmoji: String? = null,
 ) {
     val isNew: Boolean get() = id == null
 }
@@ -74,6 +81,7 @@ class ProfilesViewModel : ViewModel() {
                         id = p.id,
                         name = p.name,
                         colorArgb = p.colorArgb,
+                        avatarEmoji = p.avatarEmoji,
                         isActive = p.id == activeId,
                         isDefault = p.id == IptvDatabase.DEFAULT_PROFILE_ID,
                     )
@@ -113,7 +121,14 @@ class ProfilesViewModel : ViewModel() {
     fun startEditing(id: String) {
         val row = _state.value.profiles.firstOrNull { it.id == id } ?: return
         _state.update {
-            it.copy(editing = EditingState(id = row.id, name = row.name, colorArgb = row.colorArgb))
+            it.copy(
+                editing = EditingState(
+                    id = row.id,
+                    name = row.name,
+                    colorArgb = row.colorArgb,
+                    avatarEmoji = row.avatarEmoji,
+                ),
+            )
         }
     }
 
@@ -127,6 +142,10 @@ class ProfilesViewModel : ViewModel() {
 
     fun updateDraftColor(argb: Int) {
         _state.update { it.copy(editing = it.editing?.copy(colorArgb = argb)) }
+    }
+
+    fun updateDraftEmoji(emoji: String?) {
+        _state.update { it.copy(editing = it.editing?.copy(avatarEmoji = emoji)) }
     }
 
     fun saveEditing() {
@@ -151,6 +170,7 @@ class ProfilesViewModel : ViewModel() {
                         colorArgb = draft.colorArgb,
                         sortIndex = sortIndex,
                         createdAt = System.currentTimeMillis(),
+                        avatarEmoji = draft.avatarEmoji,
                     ),
                 )
             } else {
@@ -161,7 +181,7 @@ class ProfilesViewModel : ViewModel() {
                 // createdAt from the stored row so the list ordering stays stable.
                 val stored = profileDao.getProfile(draft.id!!) ?: return@launch
                 profileDao.upsert(
-                    stored.copy(name = name, colorArgb = draft.colorArgb),
+                    stored.copy(name = name, colorArgb = draft.colorArgb, avatarEmoji = draft.avatarEmoji),
                 )
             }
             _state.update { it.copy(editing = null) }

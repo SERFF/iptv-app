@@ -10,12 +10,11 @@ plugins {
 
 // TMDB bearer token is read from local.properties (git-ignored). If missing, the TMDB
 // integration silently disables itself — the rest of the app keeps working.
-val tmdbBearerToken: String = run {
-    val props = Properties()
+val localProps: Properties = Properties().apply {
     val file = rootProject.file("local.properties")
-    if (file.exists()) FileInputStream(file).use(props::load)
-    props.getProperty("TMDB_BEARER_TOKEN", "")
+    if (file.exists()) FileInputStream(file).use { load(it) }
 }
+val tmdbBearerToken: String = localProps.getProperty("TMDB_BEARER_TOKEN", "")
 
 android {
     namespace = "nl.vanvrouwerff.iptv"
@@ -29,6 +28,20 @@ android {
         versionName = "0.1.0"
 
         buildConfigField("String", "TMDB_BEARER_TOKEN", "\"$tmdbBearerToken\"")
+    }
+
+    signingConfigs {
+        // Release keystore from local.properties; without it release builds fall back to the
+        // debug key (fine for sideloading, not for distribution).
+        val storeFilePath = localProps.getProperty("RELEASE_STORE_FILE")
+        if (!storeFilePath.isNullOrBlank()) {
+            create("release") {
+                storeFile = rootProject.file(storeFilePath)
+                storePassword = localProps.getProperty("RELEASE_STORE_PASSWORD")
+                keyAlias = localProps.getProperty("RELEASE_KEY_ALIAS")
+                keyPassword = localProps.getProperty("RELEASE_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -45,7 +58,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 
@@ -78,6 +91,10 @@ android {
     }
 }
 
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
@@ -101,6 +118,7 @@ dependencies {
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.exoplayer.dash)
     implementation(libs.media3.ui)
+    implementation(libs.media3.datasource.okhttp)
 
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
@@ -118,6 +136,7 @@ dependencies {
     implementation(libs.work.runtime.ktx)
 
     implementation(libs.youtube.player.core)
+    implementation(libs.zxing.core)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

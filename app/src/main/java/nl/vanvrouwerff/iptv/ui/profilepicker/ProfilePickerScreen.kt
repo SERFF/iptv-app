@@ -47,6 +47,7 @@ import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
 @Composable
 fun ProfilePickerScreen(
     onPicked: () -> Unit,
+    onManageProfiles: () -> Unit = {},
     vm: ProfilePickerViewModel = viewModel(),
 ) {
     val profiles by vm.profiles.collectAsState()
@@ -75,12 +76,16 @@ fun ProfilePickerScreen(
                 items(profiles, key = { it.id }) { profile ->
                     ProfileTile(
                         profile = profile,
-                        onClick = {
-                            vm.onProfileSelected(profile)
-                            onPicked()
-                        },
+                        onClick = { vm.onProfileSelected(profile, onPicked) },
                     )
                 }
+            }
+            Spacer(Modifier.height(36.dp))
+            androidx.tv.material3.Button(onClick = onManageProfiles) {
+                androidx.tv.material3.Text(
+                    text = stringResource(R.string.profiles_manage),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
             }
         }
     }

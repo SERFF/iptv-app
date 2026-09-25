@@ -131,12 +131,52 @@ class SettingsStore(private val context: Context) {
     val autoRefreshHour: Flow<Int> =
         context.dataStore.data.map { (it[AUTO_REFRESH_HOUR] ?: DEFAULT_AUTO_REFRESH_HOUR).coerceIn(0, 23) }
 
+    /** Hero trailers start by themselves after a short idle; users on slow boxes can opt out. */
+    val trailersAutoplay: Flow<Boolean> =
+        context.dataStore.data.map { it[TRAILERS_AUTOPLAY] ?: true }
+
+    suspend fun setTrailersAutoplay(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[TRAILERS_AUTOPLAY] = enabled }
+    }
+
+    /** Player defaults. Aspect: "FIT" | "FILL" | "ZOOM". Languages: ISO 639-1, "" = no preference. */
+    val playerAspect: Flow<String> = context.dataStore.data.map { it[PLAYER_ASPECT] ?: "FIT" }
+    val preferredAudioLanguage: Flow<String> = context.dataStore.data.map { it[AUDIO_LANGUAGE] ?: "" }
+    /** "" = no preference, "off" = subtitles off by default, else an ISO 639-1 code. */
+    val preferredSubtitleLanguage: Flow<String> = context.dataStore.data.map { it[SUBTITLE_LANGUAGE] ?: "" }
+
+    suspend fun setPlayerAspect(value: String) {
+        context.dataStore.edit { prefs -> prefs[PLAYER_ASPECT] = value }
+    }
+
+    suspend fun setPreferredAudioLanguage(value: String) {
+        context.dataStore.edit { prefs -> prefs[AUDIO_LANGUAGE] = value }
+    }
+
+    suspend fun setPreferredSubtitleLanguage(value: String) {
+        context.dataStore.edit { prefs -> prefs[SUBTITLE_LANGUAGE] = value }
+    }
+
     suspend fun setAutoRefreshEnabled(enabled: Boolean) {
         context.dataStore.edit { prefs -> prefs[AUTO_REFRESH_ENABLED] = enabled }
     }
 
     suspend fun setAutoRefreshHour(hour: Int) {
         context.dataStore.edit { prefs -> prefs[AUTO_REFRESH_HOUR] = hour.coerceIn(0, 23) }
+    }
+
+    /**
+     * Comma-separated country/language codes matched against Xtream category prefixes
+     * ("┃NL┃ …", "|UK| …"). Blank = keep the whole catalogue.
+     */
+    val categoryFilter: Flow<String> =
+        context.dataStore.data.map { it[CATEGORY_FILTER] ?: DEFAULT_CATEGORY_FILTER }
+
+    suspend fun setCategoryFilter(raw: String) {
+        context.dataStore.edit { prefs ->
+            prefs[CATEGORY_FILTER] = raw.trim()
+            prefs.remove(PLAYLIST_ETAG); prefs.remove(PLAYLIST_LAST_MODIFIED)
+        }
     }
 
     suspend fun saveM3u(url: String) {
@@ -179,11 +219,17 @@ class SettingsStore(private val context: Context) {
         val LAST_PROFILE_SESSION_AT = longPreferencesKey("last_profile_session_at")
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
         val AUTO_REFRESH_ENABLED = booleanPreferencesKey("auto_refresh_enabled")
+        val TRAILERS_AUTOPLAY = booleanPreferencesKey("trailers_autoplay")
+        val PLAYER_ASPECT = stringPreferencesKey("player_aspect")
+        val AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
+        val SUBTITLE_LANGUAGE = stringPreferencesKey("subtitle_language")
         val AUTO_REFRESH_HOUR = intPreferencesKey("auto_refresh_hour")
+        val CATEGORY_FILTER = stringPreferencesKey("category_filter")
         const val TYPE_M3U = "m3u"
         const val TYPE_XTREAM = "xtream"
         const val RECENT_SEARCHES_MAX = 6
         const val DEFAULT_PROFILE_ID = "default"
         const val DEFAULT_AUTO_REFRESH_HOUR = 3
+        const val DEFAULT_CATEGORY_FILTER = "NL, UK, US, USA, EN"
     }
 }

@@ -2,8 +2,13 @@ package nl.vanvrouwerff.iptv.ui.seriesdetail
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.launchIn
@@ -22,10 +27,10 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import nl.vanvrouwerff.iptv.IptvApp
 import nl.vanvrouwerff.iptv.data.db.SeriesInfoCacheEntity
-import nl.vanvrouwerff.iptv.data.db.WatchedEpisodeEntity
 import nl.vanvrouwerff.iptv.data.remote.HttpClient
 import nl.vanvrouwerff.iptv.data.settings.SourceConfig
 import nl.vanvrouwerff.iptv.data.xtream.XtreamApi
+import nl.vanvrouwerff.iptv.data.xtream.XtreamUrls
 import nl.vanvrouwerff.iptv.data.xtream.XtreamEpisode
 import nl.vanvrouwerff.iptv.data.xtream.XtreamSeriesInfoResponse
 
@@ -42,6 +47,21 @@ data class Episode(
     val durationSecs: Long,
     /** Original air date in ISO "yyyy-MM-dd" form — displayed on the row when present. */
     val airDate: String? = null,
+)
+
+/** Minimal series context the player needs to record auto-advanced episodes. */
+data class SeriesRef(
+    val channelId: String,
+    val name: String,
+    val cover: String?,
+)
+
+data class NextUp(
+    val episode: Episode,
+    val season: SeriesSeason,
+    val resumeMs: Long,
+    /** True when the episode has saved progress to continue from. */
+    val isResume: Boolean,
 )
 
 data class SeriesSeason(
@@ -71,6 +91,8 @@ data class SeriesDetailState(
      * how far they are into each season.
      */
     val watchedCountBySeason: Map<Int, Int> = emptyMap(),
+    /** What the primary button plays: the episode in progress, or the next one to watch. */
+    val nextUp: NextUp? = null,
 ) {
     val selectedSeason: SeriesSeason?
         get() = seasons.firstOrNull { it.number == selectedSeasonNumber } ?: seasons.firstOrNull()
@@ -88,21 +110,34 @@ class SeriesDetailViewModel : ViewModel() {
 
     private var loadedSeriesId: String? = null
 
-    fun load(seriesId: String) {
+    /** Scope of the current [load]; cancelled on the next load so stale results can't land. */
+    private var loadScope: CoroutineScope? = null
+
+    fun load(seriesId: String, preview: nl.vanvrouwerff.iptv.data.Channel? = null) {
         if (loadedSeriesId == seriesId) return
         loadedSeriesId = seriesId
 
+        loadScope?.cancel()
+        val scope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
+        loadScope = scope
+
         val channelId = "xt-series:$seriesId"
-        _state.update { it.copy(seriesChannelId = channelId) }
+        val seed = preview?.takeIf { it.id == channelId }
+        _state.value = SeriesDetailState(
+            seriesChannelId = channelId,
+            title = seed?.name.orEmpty(),
+            cover = seed?.logoUrl,
+        )
+        userPickedSeason = false
 
         // Favorite flag: reactive off the shared favorites flow for the active profile.
         activeProfileIdFlow
             .flatMapLatest { profileId -> dao.observeFavoriteIds(profileId) }
             .map { channelId in it }
             .onEach { fav -> _state.update { it.copy(isFavorite = fav) } }
-            .launchIn(viewModelScope)
+            .launchIn(scope)
 
-        viewModelScope.launch {
+        scope.launch {
             val fallback = dao.getChannelById(channelId)
             _state.update {
                 it.copy(
@@ -141,7 +176,7 @@ class SeriesDetailViewModel : ViewModel() {
                             selectedSeasonNumber = seasons.firstOrNull()?.number,
                         )
                     }
-                    subscribeToEpisodeProgress(seasons)
+                    subscribeToEpisodeProgress(seasons, scope)
                 },
                 onFailure = { err ->
                     _state.update {
@@ -152,10 +187,7 @@ class SeriesDetailViewModel : ViewModel() {
         }
     }
 
-    private var progressJob: kotlinx.coroutines.Job? = null
-
-    private fun subscribeToEpisodeProgress(seasons: List<SeriesSeason>) {
-        progressJob?.cancel()
+    private fun subscribeToEpisodeProgress(seasons: List<SeriesSeason>, scope: CoroutineScope) {
         val allEpisodeIds = seasons.flatMap { s -> s.episodes.map { it.id } }
         if (allEpisodeIds.isEmpty()) {
             _state.update { it.copy(watchedCountBySeason = emptyMap()) }
@@ -166,9 +198,11 @@ class SeriesDetailViewModel : ViewModel() {
         val idToSeason: Map<String, Int> = buildMap {
             seasons.forEach { s -> s.episodes.forEach { put(it.id, s.number) } }
         }
-        progressJob = activeProfileIdFlow
+        activeProfileIdFlow
             .flatMapLatest { profileId ->
-                dao.observeProgressForIds(profileId, allEpisodeIds)
+                val chunks = allEpisodeIds.chunked(PROGRESS_QUERY_CHUNK)
+                    .map { dao.observeProgressForIds(profileId, it) }
+                combine(chunks) { parts -> parts.flatMap { it } }
             }
             .map { rows ->
                 val counts = mutableMapOf<Int, Int>()
@@ -179,43 +213,29 @@ class SeriesDetailViewModel : ViewModel() {
                     val season = idToSeason[row.channelId] ?: return@forEach
                     counts[season] = (counts[season] ?: 0) + 1
                 }
-                counts.toMap()
+                counts.toMap() to computeNextUp(seasons, rows)
             }
-            .onEach { counts -> _state.update { it.copy(watchedCountBySeason = counts) } }
-            .launchIn(viewModelScope)
+            .onEach { (counts, nextUp) ->
+                _state.update { st ->
+                    st.copy(
+                        watchedCountBySeason = counts,
+                        nextUp = nextUp,
+                        // Open on the season the user is in, until they pick one themselves.
+                        selectedSeasonNumber = if (!userPickedSeason && nextUp != null) {
+                            nextUp.season.number
+                        } else st.selectedSeasonNumber,
+                    )
+                }
+            }
+            .launchIn(scope)
     }
+
+    private var userPickedSeason = false
 
     fun selectSeason(seasonNumber: Int) {
+        userPickedSeason = true
         if (_state.value.selectedSeasonNumber == seasonNumber) return
         _state.update { it.copy(selectedSeasonNumber = seasonNumber) }
-    }
-
-    /**
-     * Persist episode metadata so the "Continue watching" rail can display it later,
-     * even after the user leaves the series-detail screen (we don't refetch get_series_info
-     * for the home view). Called right before launching the player.
-     */
-    fun rememberForContinueWatching(episode: Episode) {
-        val s = _state.value
-        val seriesChannelId = s.seriesChannelId ?: return
-        val profileId = activeProfileIdFlow.value
-        viewModelScope.launch {
-            dao.rememberEpisode(
-                WatchedEpisodeEntity(
-                    profileId = profileId,
-                    episodeId = episode.id,
-                    seriesChannelId = seriesChannelId,
-                    seriesName = s.title,
-                    seasonNumber = episode.seasonNumber,
-                    episodeNumber = episode.episodeNumber,
-                    episodeTitle = episode.title,
-                    streamUrl = episode.streamUrl,
-                    coverUrl = episode.coverUrl ?: s.cover,
-                    durationSecs = episode.durationSecs,
-                    firstWatchedAt = System.currentTimeMillis(),
-                ),
-            )
-        }
     }
 
     fun toggleFavorite() {
@@ -297,7 +317,7 @@ class SeriesDetailViewModel : ViewModel() {
     ): Episode? {
         val rawId = ep.id.asScalarString().ifBlank { return null }
         val ext = ep.containerExtension?.takeIf { it.isNotBlank() } ?: "mp4"
-        val url = "${config.host}/series/${config.username}/${config.password}/$rawId.$ext"
+        val url = XtreamUrls.stream(config.host, "series", config.username, config.password, "$rawId.$ext")
         val epNum = ep.episodeNum?.asInt(0) ?: 0
         val title = ep.title?.takeIf { it.isNotBlank() } ?: "Aflevering $epNum"
         return Episode(
@@ -326,5 +346,36 @@ class SeriesDetailViewModel : ViewModel() {
         const val SERIES_CACHE_TTL_MS: Long = 24L * 3_600_000L
         /** Mirrors the screen-side constant: an episode counts as "bekeken" at 95 %. */
         const val WATCHED_FRACTION = 0.95f
+        const val PROGRESS_QUERY_CHUNK = 500
     }
 }
+
+/**
+ * The episode the primary button should play. The most recently touched episode wins: if
+ * it isn't (nearly) finished we resume it, otherwise the following episode in broadcast
+ * order starts from the top. No progress at all → the very first episode.
+ */
+internal fun computeNextUp(
+    seasons: List<SeriesSeason>,
+    progress: List<nl.vanvrouwerff.iptv.data.db.WatchProgressEntity>,
+): NextUp? {
+    val ordered = seasons.flatMap { s -> s.episodes.map { it to s } }
+    if (ordered.isEmpty()) return null
+    val latest = progress
+        .filter { it.positionMs > 0L }
+        .maxByOrNull { it.updatedAt }
+    val first = ordered.first()
+    if (latest == null) return NextUp(first.first, first.second, 0L, isResume = false)
+    val index = ordered.indexOfFirst { it.first.id == latest.channelId }
+    if (index < 0) return NextUp(first.first, first.second, 0L, isResume = false)
+    val finished = latest.durationMs > 0L &&
+        latest.positionMs.toFloat() / latest.durationMs >= NEXT_UP_WATCHED_FRACTION
+    if (!finished) {
+        val (ep, season) = ordered[index]
+        return NextUp(ep, season, latest.positionMs, isResume = true)
+    }
+    val next = ordered.getOrNull(index + 1) ?: first
+    return NextUp(next.first, next.second, 0L, isResume = false)
+}
+
+private const val NEXT_UP_WATCHED_FRACTION = 0.95f

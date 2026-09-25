@@ -5,6 +5,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
 
@@ -20,21 +21,23 @@ class TmdbHeroPreloader(
     private val movieDetails: TmdbMovieDetailsRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val inFlight: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     fun warm(heroes: List<Channel>) {
         heroes.asSequence()
             .filter { it.type == ContentType.MOVIE }
             .take(MAX_PRELOAD)
+            .filter { inFlight.add(it.id) }
             .forEach { ch ->
                 scope.launch {
-                    runCatching {
+                    try {
                         val title = TmdbCatalogueMatcher.normalize(ch.name).ifBlank { ch.name }
-                        movieDetails.lookupMovie(
-                            channelId = ch.id,
-                            title = title,
-                            releaseYear = null,
-                        )
-                    }.onFailure { Log.w(TAG, "preload failed for ${ch.id}", it) }
+                        runCatching {
+                            movieDetails.lookupMovie(channelId = ch.id, title = title, releaseYear = null)
+                        }.onFailure { Log.w(TAG, "preload failed for ${ch.id}", it) }
+                    } finally {
+                        inFlight.remove(ch.id)
+                    }
                 }
             }
     }

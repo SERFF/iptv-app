@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -51,72 +52,40 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import coil.compose.AsyncImage
 import nl.vanvrouwerff.iptv.R
+import androidx.compose.ui.platform.LocalContext
+import nl.vanvrouwerff.iptv.ui.detail.FocusableTextBlock
+import nl.vanvrouwerff.iptv.ui.detail.detailSection
+import nl.vanvrouwerff.iptv.ui.detail.DetailScaffold
+import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.focus.onFocusChanged
+import nl.vanvrouwerff.iptv.ui.theme.tvFocus
+import nl.vanvrouwerff.iptv.ui.theme.FocusStyle
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
 fun SeriesDetailScreen(
     seriesId: String,
+    preview: Channel? = null,
     onBack: () -> Unit,
-    onPlayEpisode: (episode: Episode, season: SeriesSeason, resumeMs: Long) -> Unit,
+    onPlayEpisode: (episode: Episode, season: SeriesSeason, series: SeriesRef, resumeMs: Long) -> Unit,
     vm: SeriesDetailViewModel = viewModel(),
 ) {
-    LaunchedEffect(seriesId) { vm.load(seriesId) }
+    LaunchedEffect(seriesId) { vm.load(seriesId, preview) }
     val state by vm.state.collectAsState()
 
     BackHandler(enabled = true, onBack = onBack)
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(IptvPalette.BackgroundDeep),
-    ) {
-        Backdrop(cover = state.cover)
-
-        when {
-            state.loading -> CenterMessage(stringResource(R.string.detail_loading))
-            state.error != null && state.seasons.isEmpty() ->
-                CenterMessage(state.error ?: stringResource(R.string.series_load_failed))
-            else -> DetailBody(
-                state = state,
-                onSelectSeason = vm::selectSeason,
-                onToggleFavorite = vm::toggleFavorite,
-                onBack = onBack,
-                onPlayEpisode = { ep, season, resumeMs ->
-                    // Cache episode metadata BEFORE starting playback so the "Continue
-                    // watching" rail has something to render even if the user closes the
-                    // app mid-episode.
-                    vm.rememberForContinueWatching(ep)
-                    onPlayEpisode(ep, season, resumeMs)
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun Backdrop(cover: String?) {
-    if (cover != null) {
-        AsyncImage(
-            model = cover,
-            contentDescription = null, // decorative; poster on the left carries the label
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize(),
-        )
-    } else {
-        Box(
-            modifier = Modifier.fillMaxSize().background(
-                Brush.linearGradient(
-                    listOf(IptvPalette.AccentDeep, IptvPalette.BackgroundDeep),
-                ),
-            ),
-        )
-    }
-    // Global dimmer so text over any cover stays legible.
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(IptvPalette.BackgroundDeep.copy(alpha = 0.78f)),
+    DetailBody(
+        state = state,
+        onSelectSeason = vm::selectSeason,
+        onToggleFavorite = vm::toggleFavorite,
+        onPlayEpisode = { ep, season, resumeMs ->
+            val seriesChannelId = state.seriesChannelId ?: return@DetailBody
+            onPlayEpisode(ep, season, SeriesRef(seriesChannelId, state.title, state.cover), resumeMs)
+        },
     )
 }
 
@@ -126,189 +95,160 @@ private fun DetailBody(
     state: SeriesDetailState,
     onSelectSeason: (Int) -> Unit,
     onToggleFavorite: () -> Unit,
-    onBack: () -> Unit,
     onPlayEpisode: (Episode, SeriesSeason, Long) -> Unit,
 ) {
-    // Grab focus on first composition so D-pad stays inside this overlay instead of
-    // leaking to the ChannelsScreen rendered underneath. Without this, pressing OK lands
-    // on whichever card was focused before the overlay opened.
-    val initialFocus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { initialFocus.requestFocus() } }
+    // The play button exists from the first frame (as a placeholder while episodes load),
+    // so focus lands on it once and never has to jump when the data arrives.
+    val playFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.withFrameNanos { }
+        runCatching { playFocus.requestFocus() }
+    }
+    val context = LocalContext.current
 
-    Row(modifier = Modifier.fillMaxSize().padding(48.dp)) {
-        // Left: meta + cover.
-        Column(
-            modifier = Modifier.width(360.dp).fillMaxHeight(),
-            verticalArrangement = Arrangement.Top,
-        ) {
-            if (state.cover != null) {
-                Box(
-                    modifier = Modifier
-                        .size(width = 200.dp, height = 300.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(IptvPalette.SurfaceLift),
-                ) {
-                    AsyncImage(
-                        model = state.cover,
-                        contentDescription = state.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
-                Spacer(Modifier.height(16.dp))
+    val meta = listOfNotNull(
+        state.releaseYear,
+        state.rating?.let { "\u2605 $it" },
+        state.genre,
+    ).joinToString("  \u00B7  ")
+
+    DetailScaffold(
+        backdropUrl = state.cover,
+        eyebrow = null,
+        title = state.title,
+        meta = meta,
+        actions = {
+            val next = state.nextUp
+            Button(
+                onClick = { if (next != null) onPlayEpisode(next.episode, next.season, next.resumeMs) },
+                modifier = Modifier.focusRequester(playFocus),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.padding(start = 10.dp).size(22.dp),
+                )
+                Text(
+                    text = when {
+                        next != null -> stringResource(
+                            if (next.isResume) R.string.series_continue_episode else R.string.series_play_episode,
+                            next.episode.seasonNumber,
+                            next.episode.episodeNumber,
+                        )
+                        state.loading -> stringResource(R.string.detail_loading)
+                        else -> stringResource(R.string.series_no_episodes)
+                    },
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.padding(start = 8.dp, end = 14.dp, top = 4.dp, bottom = 4.dp),
+                )
             }
-
-            Text(
-                text = state.title,
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontWeight = FontWeight.ExtraBold,
-                    color = IptvPalette.TextPrimary,
+            nl.vanvrouwerff.iptv.ui.detail.DetailActionButton(
+                icon = if (state.isFavorite) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                label = stringResource(R.string.rail_my_list),
+                contentDescription = stringResource(
+                    if (state.isFavorite) R.string.detail_remove_from_list else R.string.detail_add_to_list,
                 ),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+                onClick = onToggleFavorite,
             )
-
-            val metaLine = listOfNotNull(
-                state.releaseYear,
-                state.rating?.let { "\u2605 $it" },
-                state.genre,
-            ).joinToString("  \u00B7  ")
-            if (metaLine.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = metaLine,
-                    style = MaterialTheme.typography.labelMedium.copy(
-                        color = IptvPalette.TextTertiary,
-                        letterSpacing = 2.sp,
-                    ),
-                )
-            }
-
-            // Action buttons come BEFORE the plot. On a 540dp-tall TV viewport the poster
-            // alone would push them below the fold otherwise — the favorite toggle needs
-            // to be reliably visible (and focusable) regardless of plot length.
-            Spacer(Modifier.height(14.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = onToggleFavorite,
-                    modifier = Modifier.focusRequester(initialFocus),
-                ) {
-                    val label = if (state.isFavorite)
-                        stringResource(R.string.detail_remove_from_list)
-                    else
-                        stringResource(R.string.detail_add_to_list)
-                    Icon(
-                        imageVector = if (state.isFavorite) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
-                        contentDescription = if (state.isFavorite)
-                            stringResource(R.string.icon_desc_bookmark_remove)
-                        else
-                            stringResource(R.string.icon_desc_bookmark_add),
-                        modifier = Modifier.padding(start = 10.dp).size(20.dp),
-                    )
-                    Text(
-                        label,
-                        modifier = Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
-                    )
-                }
-                Button(onClick = onBack) {
-                    Icon(
-                        imageVector = Icons.Filled.ArrowBack,
-                        contentDescription = stringResource(R.string.icon_desc_back),
-                        modifier = Modifier.padding(start = 10.dp).size(20.dp),
-                    )
-                    Text(
-                        stringResource(R.string.detail_back),
-                        modifier = Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
-                    )
-                }
-            }
-
-            state.plot?.let {
-                if (it.length > 80) {
-                    Spacer(Modifier.height(20.dp))
-                    Text(
-                        text = stringResource(R.string.detail_section_overview),
-                        style = MaterialTheme.typography.labelLarge.copy(
-                            color = IptvPalette.TextSecondary,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 2.sp,
-                        ),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                } else {
-                    Spacer(Modifier.height(14.dp))
-                }
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
-                    color = IptvPalette.TextSecondary,
-                    maxLines = 5,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        },
+    ) {
+        state.plot?.takeIf { it.isNotBlank() }?.let { plot ->
+            detailSection(key = "plot", title = context.getString(R.string.detail_section_overview)) {
+                FocusableTextBlock(text = plot)
             }
         }
-
-        Spacer(Modifier.width(32.dp))
-
-        // Right: seasons + episodes.
-        Column(modifier = Modifier.fillMaxSize()) {
-            SeasonRow(
-                seasons = state.seasons,
-                selected = state.selectedSeasonNumber,
-                watchedCountBySeason = state.watchedCountBySeason,
-                onSelect = onSelectSeason,
+        detailSection(key = "episodes", title = context.getString(R.string.series_section_episodes)) {
+            EpisodesBlock(
+                state = state,
+                onSelectSeason = onSelectSeason,
+                onPlayEpisode = onPlayEpisode,
             )
-
-            val active = state.selectedSeason
-            if (active != null) {
-                val watched = state.watchedCountBySeason[active.number] ?: 0
-                val total = active.episodes.size
-                if (total > 0) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = stringResource(R.string.season_progress, watched, total),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = IptvPalette.TextTertiary,
-                            letterSpacing = 1.sp,
-                        ),
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            val season = state.selectedSeason
-            val episodes = season?.episodes.orEmpty()
-
-            if (season == null || episodes.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = stringResource(R.string.series_no_episodes),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = IptvPalette.TextSecondary,
-                    )
-                }
-            } else {
-                val activeSeason: SeriesSeason = season
-                TvLazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(bottom = 32.dp),
-                ) {
-                    items(episodes, key = { it.id }) { ep ->
-                        EpisodeRow(
-                            episode = ep,
-                            onClick = { resumeMs -> onPlayEpisode(ep, activeSeason, resumeMs) },
-                        )
-                    }
-                }
-            }
         }
     }
 }
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun EpisodesBlock(
+    state: SeriesDetailState,
+    onSelectSeason: (Int) -> Unit,
+    onPlayEpisode: (Episode, SeriesSeason, Long) -> Unit,
+) {
+    when {
+        state.loading -> {
+            Text(
+                text = stringResource(R.string.detail_loading),
+                style = MaterialTheme.typography.bodyMedium,
+                color = IptvPalette.TextSecondary,
+            )
+            return
+        }
+        state.error != null && state.seasons.isEmpty() -> {
+            Text(
+                text = state.error,
+                style = MaterialTheme.typography.bodyMedium,
+                color = IptvPalette.TextSecondary,
+            )
+            return
+        }
+    }
+    SeasonRow(
+        seasons = state.seasons,
+        selected = state.selectedSeasonNumber,
+        watchedCountBySeason = state.watchedCountBySeason,
+        onSelect = onSelectSeason,
+    )
+    val season = state.selectedSeason
+    val episodes = season?.episodes.orEmpty()
+    if (season != null && episodes.isNotEmpty()) {
+        val watched = state.watchedCountBySeason[season.number] ?: 0
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = stringResource(R.string.season_progress, watched, episodes.size),
+            style = MaterialTheme.typography.labelSmall.copy(
+                color = IptvPalette.TextTertiary,
+                letterSpacing = 1.sp,
+            ),
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+    if (season == null || episodes.isEmpty()) {
+        Text(
+            text = stringResource(R.string.series_no_episodes),
+            style = MaterialTheme.typography.bodyMedium,
+            color = IptvPalette.TextSecondary,
+        )
+        return
+    }
+    val activeSeason: SeriesSeason = season
+    val episodeListState = remember(activeSeason.number) {
+        androidx.tv.foundation.lazy.list.TvLazyListState()
+    }
+    val nextUpIndex = state.nextUp
+        ?.takeIf { it.season.number == activeSeason.number }
+        ?.let { n -> episodes.indexOfFirst { it.id == n.episode.id } }
+        ?: -1
+    LaunchedEffect(activeSeason.number, nextUpIndex) {
+        if (nextUpIndex >= 0) runCatching { episodeListState.scrollToItem(nextUpIndex) }
+    }
+    // Fixed-height inner list: nested inside the page's lazy column, and tall enough to
+    // show several episodes at once on a 540dp screen.
+    TvLazyColumn(
+        state = episodeListState,
+        modifier = Modifier.fillMaxWidth().height(EPISODE_LIST_HEIGHT),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(vertical = 4.dp, horizontal = 4.dp),
+    ) {
+        items(episodes, key = { it.id }) { ep ->
+            EpisodeRow(
+                episode = ep,
+                onClick = { resumeMs -> onPlayEpisode(ep, activeSeason, resumeMs) },
+            )
+        }
+    }
+}
+
+private val EPISODE_LIST_HEIGHT = 380.dp
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
@@ -351,16 +291,21 @@ private fun SeasonChip(
     trailing: String?,
     onClick: () -> Unit,
 ) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(999.dp)
     Surface(
         onClick = onClick,
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(999.dp)),
+        shape = ClickableSurfaceDefaults.shape(shape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (selected) IptvPalette.Accent else Color.Transparent,
             contentColor = if (selected) Color.White else IptvPalette.TextSecondary,
-            focusedContainerColor = if (selected) IptvPalette.Accent else IptvPalette.SurfaceElevated,
+            focusedContainerColor = if (selected) IptvPalette.Accent else FocusStyle.Fill,
             focusedContentColor = Color.White,
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        modifier = Modifier
+            .onFocusChanged { focused = it.isFocused }
+            .tvFocus(focused, shape, FocusStyle.ChipScale),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 18.dp, vertical = 8.dp),
@@ -403,19 +348,24 @@ private fun EpisodeRow(episode: Episode, onClick: (resumeMs: Long) -> Unit) {
     val fraction = if (hasProgress) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
     val watched = hasProgress && fraction >= WATCHED_FRACTION
 
+    var rowFocused by remember { mutableStateOf(false) }
+    val episodeShape = RoundedCornerShape(10.dp)
     Surface(
         // If the user already finished the episode, resume at 0 instead of bouncing to
         // the credits roll.
         onClick = { onClick(if (hasProgress && !watched) positionMs else 0L) },
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(10.dp)),
+        shape = ClickableSurfaceDefaults.shape(episodeShape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = IptvPalette.SurfaceElevated,
             contentColor = IptvPalette.TextPrimary,
-            focusedContainerColor = IptvPalette.SurfaceLift,
+            focusedContainerColor = FocusStyle.Fill,
             focusedContentColor = IptvPalette.TextPrimary,
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .onFocusChanged { rowFocused = it.isFocused }
+            .tvFocus(rowFocused, episodeShape),
     ) {
         Column(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),

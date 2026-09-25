@@ -56,6 +56,9 @@ data class FavoriteEntity(
     val profileId: String,
     val channelId: String,
     val addedAt: Long,
+    /** User-chosen order; new favourites append (position = time added). */
+    @androidx.room.ColumnInfo(defaultValue = "0")
+    val position: Long = addedAt,
 )
 
 /**

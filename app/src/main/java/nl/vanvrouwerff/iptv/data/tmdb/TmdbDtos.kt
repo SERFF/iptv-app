@@ -57,6 +57,7 @@ data class TmdbMovieDetailsResponse(
     @SerialName("original_title") val originalTitle: String? = null,
     @SerialName("release_date") val releaseDate: String? = null,
     val runtime: Int? = null,
+    @SerialName("backdrop_path") val backdropPath: String? = null,
     val credits: TmdbCreditsResponse? = null,
     val similar: TmdbMovieListResponse? = null,
     val videos: TmdbVideosResponse? = null,

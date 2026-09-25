@@ -53,6 +53,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.foundation.focusGroup
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -91,7 +97,9 @@ import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
 import nl.vanvrouwerff.iptv.data.tmdb.TmdbCatalogueMatcher
 import nl.vanvrouwerff.iptv.data.tmdb.TmdbClient
+import nl.vanvrouwerff.iptv.ui.theme.FocusStyle
 import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
+import nl.vanvrouwerff.iptv.ui.theme.tvFocus
 
 /**
  * Rough threshold that distinguishes "bulk insert in progress" from "user genuinely has
@@ -109,6 +117,11 @@ private const val KEN_BURNS_CYCLE_MS: Int = 12_000
 /** Idle delay before a MOVIE hero swaps its Ken Burns backdrop for a muted YouTube trailer. */
 private const val HERO_TRAILER_DELAY_MS: Long = 2_500L
 
+/** Leaves the title of the first rail and the top of its cards visible on a 540dp screen. */
+private val HERO_HEIGHT = 340.dp
+
+private const val HERO_SWAP_FOCUS_DELAY_MS: Long = 650L
+
 private data class TypeTab(val type: ContentType, val labelRes: Int, val emptyRes: Int)
 
 private val Tabs = listOf(
@@ -122,13 +135,15 @@ private val Tabs = listOf(
 fun ChannelsScreen(
     onOpenSettings: () -> Unit,
     onOpenProfiles: () -> Unit,
+    onOpenCategories: (ContentType, String?) -> Unit = { _, _ -> },
+    onOpenGuide: () -> Unit = {},
     onPlay: (Channel, List<Channel>) -> Unit,
     onPlayDirect: (Channel) -> Unit,
     onOpenDetail: (Channel) -> Unit,
     vm: ChannelsViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsState()
-    val hoverChannel by vm.hoverChannel.collectAsState()
+    val hoverChannel by vm.settledHoverChannel.collectAsState()
 
     Box(
         modifier = Modifier
@@ -148,7 +163,7 @@ fun ChannelsScreen(
                 // (say 8 channels) isn't stuck on skeleton forever.
                 (state.loading || state.refreshing) &&
                     state.totalChannelCount < SKELETON_MIN_COUNT ->
-                    ChannelsSkeleton()
+                    ChannelsSkeleton(progress = state.importProgress)
 
                 state.error != null && !state.hasAnyChannels ->
                     ErrorState(
@@ -163,7 +178,11 @@ fun ChannelsScreen(
                 else -> NetflixLayout(
                     state = state,
                     hoverChannel = hoverChannel,
+                    focusMemoryFor = vm::focusMemoryFor,
+                    onRememberFocus = vm::rememberFocus,
                     onSelectType = vm::selectType,
+                    onOpenCategories = onOpenCategories,
+                    onOpenGuide = onOpenGuide,
                     onOpenSettings = onOpenSettings,
                     onOpenProfiles = onOpenProfiles,
                     onRefresh = vm::refresh,
@@ -172,7 +191,10 @@ fun ChannelsScreen(
                     onOpenDetail = onOpenDetail,
                     onHover = vm::onHoverChannel,
                     onSetManaging = vm::setManagingFavorites,
+                    onRemoveFromContinue = vm::removeFromContinueWatching,
+                    onMarkWatched = vm::markWatched,
                     onToggleFavorite = vm::toggleFavorite,
+                    onMoveFavorite = vm::moveFavorite,
                     onSearchChange = vm::setSearchQuery,
                     onRememberSearch = vm::rememberCurrentSearch,
                     onClearRecents = vm::clearRecentSearches,
@@ -204,7 +226,11 @@ private fun AmbientBackdrop() {
 private fun NetflixLayout(
     state: ChannelsUiState,
     hoverChannel: Channel?,
+    focusMemoryFor: (ContentType) -> RailFocusMemory?,
+    onRememberFocus: (ContentType, RailFocusMemory?) -> Unit,
     onSelectType: (ContentType) -> Unit,
+    onOpenCategories: (ContentType, String?) -> Unit,
+    onOpenGuide: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenProfiles: () -> Unit,
     onRefresh: () -> Unit,
@@ -213,7 +239,10 @@ private fun NetflixLayout(
     onOpenDetail: (Channel) -> Unit,
     onHover: (Channel?) -> Unit,
     onSetManaging: (Boolean) -> Unit,
+    onRemoveFromContinue: (String) -> Unit,
+    onMarkWatched: (String) -> Unit,
     onToggleFavorite: (String) -> Unit,
+    onMoveFavorite: (String, Int) -> Unit,
     onSearchChange: (String) -> Unit,
     onRememberSearch: () -> Unit,
     onClearRecents: () -> Unit,
@@ -221,10 +250,27 @@ private fun NetflixLayout(
     // Shared across the whole layout so BACK from anywhere inside the rails can jump
     // straight to the top (and the TopBar's tab pills) without the user having to crawl
     // back row-by-row through 60 rails of posters.
-    val railsListState = androidx.tv.foundation.lazy.list.rememberTvLazyListState()
+    // Focus restore: only when this layout is freshly composed (coming back from a detail
+    // screen) and only for the tab that was active then. A tab switch or cold start (no
+    // memory) lands on the hero as before.
+    val initialType = remember { state.selectedType }
+    val initialMemory = remember { focusMemoryFor(state.selectedType) }
+    val railsListState = remember(state.selectedType) {
+        val m = initialMemory?.takeIf { state.selectedType == initialType }
+        androidx.tv.foundation.lazy.list.TvLazyListState(m?.listIndex ?: 0, m?.listOffset ?: 0)
+    }
+    val focusController = remember(state.selectedType) {
+        RailFocusController(
+            type = state.selectedType,
+            initial = initialMemory?.takeIf { state.selectedType == initialType },
+            listState = railsListState,
+            onRemember = onRememberFocus,
+        )
+    }
     val tabFocusRequester = remember { FocusRequester() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var searchVisible by remember { mutableStateOf(false) }
+    var contextTarget by remember { mutableStateOf<Channel?>(null) }
     // Tracked via onFocusChanged on the TopBar wrapper — lets us fall BACK through to the
     // system (exit app) only when focus is already on the tabs, instead of bouncing the
     // user between tabs and exit on every press.
@@ -253,18 +299,51 @@ private fun NetflixLayout(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .onPreviewKeyEvent { event ->
+                if (event.nativeKeyEvent.action != android.view.KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                if (searchVisible || state.managingFavorites || contextTarget != null) return@onPreviewKeyEvent false
+                when (event.nativeKeyEvent.keyCode) {
+                    android.view.KeyEvent.KEYCODE_MENU -> {
+                        val card = focusController.focusedCard
+                        when {
+                            card != null -> contextTarget = card
+                            state.selectedType == ContentType.TV -> onSetManaging(true)
+                            else -> onOpenSettings()
+                        }
+                        true
+                    }
+                    android.view.KeyEvent.KEYCODE_SETTINGS -> {
+                        onOpenSettings()
+                        true
+                    }
+                    android.view.KeyEvent.KEYCODE_SEARCH,
+                    android.view.KeyEvent.KEYCODE_MEDIA_PLAY,
+                    android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
+                        searchVisible = true
+                        true
+                    }
+                    else -> false
+                }
+            },
+    ) {
         TopBar(
             selected = state.selectedType,
             onSelect = onSelectType,
             onOpenSettings = onOpenSettings,
             onOpenProfiles = onOpenProfiles,
             onOpenSearch = { searchVisible = true },
+            onOpenCategories = { onOpenCategories(state.selectedType, null) },
+            onOpenGuide = onOpenGuide.takeIf { state.selectedType == ContentType.TV },
             onRefresh = onRefresh,
             refreshing = state.refreshing,
             lastRefreshAtMs = state.lastRefreshAtMs,
             error = state.error,
             activeProfileName = state.activeProfileName,
+            activeProfileColorArgb = state.activeProfileColorArgb,
+            activeProfileEmoji = state.activeProfileEmoji,
             selectedTabFocusRequester = tabFocusRequester,
             onFocusChanged = { topBarHasFocus = it },
         )
@@ -284,11 +363,13 @@ private fun NetflixLayout(
                             state = state,
                             onDone = { onSetManaging(false) },
                             onToggleFavorite = onToggleFavorite,
+                            onMoveFavorite = onMoveFavorite,
                         )
                     else -> RailsView(
                         state = state,
-                        hoverChannel = hoverChannel,
                         railsListState = railsListState,
+                        focusController = focusController,
+                        hoverChannel = hoverChannel,
                         searchVisible = searchVisible,
                         onCloseSearch = {
                             searchVisible = false
@@ -302,6 +383,8 @@ private fun NetflixLayout(
                         onRememberSearch = onRememberSearch,
                         onClearRecents = onClearRecents,
                         onStartManaging = { onSetManaging(true) }.takeIf { type == ContentType.TV },
+                        onSeeAll = { category -> onOpenCategories(type, category) },
+                        onContextMenu = { contextTarget = it },
                     )
                 }
             }
@@ -309,6 +392,36 @@ private fun NetflixLayout(
                 state = state,
                 modifier = Modifier.align(Alignment.BottomCenter),
             )
+            contextTarget?.let { target ->
+                val close = {
+                    contextTarget = null
+                    focusController.refocus(target.id)
+                }
+                BackHandler(enabled = true, onBack = close)
+                CardContextMenu(
+                    channel = target,
+                    isFavorite = target.id in state.favoriteIds,
+                    hasProgress = (state.progressById[target.id] ?: 0f) > 0f,
+                    onToggleFavorite = {
+                        onToggleFavorite(target.id)
+                        close()
+                    },
+                    onRemoveFromContinue = {
+                        onRemoveFromContinue(target.id)
+                        close()
+                    },
+                    onMarkWatched = {
+                        onMarkWatched(target.id)
+                        close()
+                    },
+                    onManageChannels = {
+                        contextTarget = null
+                        onSetManaging(true)
+                    },
+                    onDismiss = close,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+            }
         }
     }
 }
@@ -325,19 +438,18 @@ private fun KeyHintStrip(
 ) {
     val hints: List<Int> = when {
         state.managingFavorites -> listOf(
-            R.string.keyhint_ok_play, // "OK toevoegen/verwijderen" — re-use label wording
+            R.string.keyhint_ok_toggle_favorite,
             R.string.keyhint_back_exit,
         )
         state.selectedType == ContentType.TV -> listOf(
             R.string.keyhint_ok_play,
             R.string.keyhint_menu_favorites,
             R.string.keyhint_search,
-            R.string.keyhint_settings,
         )
         else -> listOf(
             R.string.keyhint_ok_play,
             R.string.keyhint_search,
-            R.string.keyhint_settings,
+            R.string.keyhint_menu_settings,
         )
     }
     Row(
@@ -366,9 +478,10 @@ private fun KeyHintStrip(
 @Composable
 private fun RailsView(
     state: ChannelsUiState,
-    hoverChannel: Channel? = null,
     railsListState: androidx.tv.foundation.lazy.list.TvLazyListState =
         androidx.tv.foundation.lazy.list.rememberTvLazyListState(),
+    focusController: RailFocusController? = null,
+    hoverChannel: Channel? = null,
     searchVisible: Boolean = false,
     onCloseSearch: () -> Unit = {},
     onPlay: (Channel, List<Channel>) -> Unit,
@@ -379,6 +492,8 @@ private fun RailsView(
     onRememberSearch: () -> Unit = {},
     onClearRecents: () -> Unit = {},
     onStartManaging: (() -> Unit)? = null,
+    onSeeAll: (String) -> Unit = {},
+    onContextMenu: (Channel) -> Unit = {},
 ) {
     val rails = state.rails
     val hero = state.hero
@@ -428,14 +543,21 @@ private fun RailsView(
             searchVisible && state.isSearching -> SearchResultsView(
                 query = state.searchQuery,
                 results = state.searchResults,
-                contentType = state.selectedType,
                 onPlay = { ch, list ->
                     onRememberSearch()
                     onPlay(ch, list)
                 },
             )
             rails.isEmpty() || hero == null -> CenterMessage(stringResource(emptyRes))
-            else -> TvLazyColumn(
+            else -> {
+                val leadingTitles = setOf(
+                    ChannelsUiState.CONTINUE_WATCHING,
+                    ChannelsUiState.POPULAR_NOW,
+                    ChannelsUiState.MY_LIST,
+                )
+                val leadingRails = rails.filter { it.title in leadingTitles }
+                val categoryRails = rails.filter { it.title !in leadingTitles }
+                TvLazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 state = railsListState,
                 contentPadding = PaddingValues(bottom = 48.dp),
@@ -444,7 +566,10 @@ private fun RailsView(
                 item {
                     HeroCarousel(
                         heroes = heroes,
+                        isAtTop = { railsListState.firstVisibleItemIndex == 0 },
+                        focusController = focusController,
                         hoverChannel = hoverChannel,
+                        trailersEnabled = state.trailersAutoplay,
                         lastWatchedId = state.lastWatchedId,
                         nowPlayingByEpgId = state.nowPlayingByEpgId,
                         progressById = state.progressById,
@@ -458,37 +583,11 @@ private fun RailsView(
                         onMoreInfo = onOpenDetail,
                     )
                 }
-                if (state.recentlyAdded.isNotEmpty() && state.selectedType != ContentType.TV) {
-                    item(key = "rail_recently_added") {
-                        RailRow(
-                            rail = Rail(
-                                title = stringResource(R.string.rail_recently_added),
-                                channels = state.recentlyAdded,
-                            ),
-                            contentType = state.selectedType,
-                            progressById = state.progressById,
-                            onHover = onHover,
-                            onPlay = { ch -> onPlay(ch, state.recentlyAdded) },
-                        )
-                    }
-                }
-                if (state.watchlist.isNotEmpty() && state.selectedType != ContentType.TV) {
-                    item(key = "rail_watchlist") {
-                        RailRow(
-                            rail = Rail(
-                                title = stringResource(R.string.rail_watchlist),
-                                channels = state.watchlist,
-                            ),
-                            contentType = state.selectedType,
-                            progressById = state.progressById,
-                            onHover = onHover,
-                            onPlay = { ch -> onPlay(ch, state.watchlist) },
-                        )
-                    }
-                }
-                items(rails, key = { it.title }) { rail ->
+                items(leadingRails, key = { it.title }) { rail ->
                     RailRow(
                         rail = rail,
+                        focusController = focusController,
+                        onContextMenu = onContextMenu,
                         contentType = state.selectedType,
                         progressById = state.progressById,
                         onHover = onHover,
@@ -504,6 +603,44 @@ private fun RailsView(
                         },
                     )
                 }
+                if (state.recentlyAdded.isNotEmpty() && state.selectedType != ContentType.TV) {
+                    item(key = "rail_recently_added") {
+                        RailRow(
+                            rail = Rail(
+                                title = stringResource(R.string.rail_recently_added),
+                                channels = state.recentlyAdded,
+                            ),
+                            focusController = focusController,
+                            onContextMenu = onContextMenu,
+                            contentType = state.selectedType,
+                            progressById = state.progressById,
+                            onHover = onHover,
+                            onPlay = { ch -> onPlay(ch, state.recentlyAdded) },
+                        )
+                    }
+                }
+                items(categoryRails, key = { it.title }) { rail ->
+                    RailRow(
+                        rail = rail,
+                        onSeeAll = { onSeeAll(rail.title) },
+                        focusController = focusController,
+                        onContextMenu = onContextMenu,
+                        contentType = state.selectedType,
+                        progressById = state.progressById,
+                        onHover = onHover,
+                        nowPlayingByEpgId = state.nowPlayingByEpgId,
+                        onPlay = { ch ->
+                            if (rail.isDirectPlay) {
+                                // "Verder kijken": skip the detail screen; auto-resume.
+                                onPlayDirect(ch)
+                            } else {
+                                val list = rail.channels.filter { it.streamUrl != null }
+                                onPlay(ch, list)
+                            }
+                        },
+                    )
+                }
+            }
             }
         }
     }
@@ -689,7 +826,6 @@ private fun RecentChip(label: String, subtle: Boolean = false, onClick: () -> Un
 private fun SearchResultsView(
     query: String,
     results: List<Channel>,
-    contentType: ContentType,
     onPlay: (Channel, List<Channel>) -> Unit,
 ) {
     if (results.isEmpty()) {
@@ -706,115 +842,57 @@ private fun SearchResultsView(
         return
     }
 
-    val columns = if (contentType == ContentType.TV) 4 else 5
-    val playable = remember(results) { results.filter { it.streamUrl != null } }
+    val sections = remember(results) {
+        listOf(ContentType.TV, ContentType.MOVIE, ContentType.SERIES)
+            .map { type -> type to results.filter { it.type == type } }
+            .filter { it.second.isNotEmpty() }
+    }
 
     TvLazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        items(results.chunked(columns), key = { row -> row.first().id }) { row ->
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                row.forEach { channel ->
-                    when (contentType) {
-                        ContentType.TV -> LogoCard(
-                            channel = channel,
-                            progressFraction = null,
-                            onClick = {
-                                if (channel.streamUrl != null) onPlay(channel, playable)
-                            },
-                        )
-                        ContentType.MOVIE, ContentType.SERIES -> PosterCard(
-                            channel = channel,
-                            progressFraction = null,
-                            // Series cards have a null streamUrl but must still propagate —
-                            // the outer router takes them to the detail screen.
-                            onClick = { onPlay(channel, playable) },
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-private fun FavoritesView(
-    state: ChannelsUiState,
-    onPlay: (Channel, List<Channel>) -> Unit,
-    onStartManaging: () -> Unit,
-) {
-    val favorites = state.favoriteChannels
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 48.dp, vertical = 16.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stringResource(R.string.tab_tv),
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontWeight = FontWeight.Bold,
-                    color = IptvPalette.TextPrimary,
-                ),
-            )
-            Spacer(Modifier.weight(1f))
-            Button(onClick = onStartManaging) {
+        sections.forEach { (type, sectionItems) ->
+            val columns = if (type == ContentType.TV) 4 else 5
+            val playable = sectionItems.filter { it.streamUrl != null }
+            item(key = "header_${type.name}") {
                 Text(
-                    stringResource(R.string.favorites_manage),
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            }
-        }
-
-        Spacer(Modifier.height(20.dp))
-
-        if (favorites.isEmpty()) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    text = stringResource(R.string.favorites_empty_title),
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.SemiBold,
+                    text = stringResource(
+                        when (type) {
+                            ContentType.TV -> R.string.search_section_tv
+                            ContentType.MOVIE -> R.string.search_section_movies
+                            ContentType.SERIES -> R.string.search_section_series
+                        },
+                        sectionItems.size,
+                    ),
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
                         color = IptvPalette.TextPrimary,
                     ),
+                    modifier = Modifier.padding(top = 8.dp),
                 )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    text = stringResource(R.string.favorites_empty_body),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = IptvPalette.TextSecondary,
-                )
-                Spacer(Modifier.height(20.dp))
-                Button(onClick = onStartManaging) {
-                    Text(
-                        stringResource(R.string.favorites_manage),
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-                    )
-                }
             }
-        } else {
-            TvLazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                contentPadding = PaddingValues(bottom = 48.dp),
-            ) {
-                items(favorites, key = { it.id }) { ch ->
-                    ChannelListRow(
-                        channel = ch,
-                        trailing = null,
-                        nowPlaying = ch.epgChannelId?.let { state.nowPlayingByEpgId[it] },
-                        onClick = {
-                            val list = favorites.filter { it.streamUrl != null }
-                            if (ch.streamUrl != null) onPlay(ch, list)
-                        },
-                    )
+            items(sectionItems.chunked(columns), key = { row -> "${type.name}_${row.first().id}" }) { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    row.forEach { channel ->
+                        when (type) {
+                            ContentType.TV -> LogoCard(
+                                channel = channel,
+                                progressFraction = null,
+                                onClick = {
+                                    if (channel.streamUrl != null) onPlay(channel, playable)
+                                },
+                            )
+                            ContentType.MOVIE, ContentType.SERIES -> PosterCard(
+                                channel = channel,
+                                progressFraction = null,
+                                // Series cards have a null streamUrl but must still propagate —
+                                // the outer router takes them to the detail screen.
+                                onClick = { onPlay(channel, playable) },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -827,7 +905,10 @@ private fun ManageFavoritesView(
     state: ChannelsUiState,
     onDone: () -> Unit,
     onToggleFavorite: (String) -> Unit,
+    onMoveFavorite: (String, Int) -> Unit = { _, _ -> },
 ) {
+    var orderMode by remember { mutableStateOf(false) }
+    var movingId by remember { mutableStateOf<String?>(null) }
     // Manage mode is TV-only, and `state.channels`/`state.categories` are the current
     // tab's data. When we reach this view the current tab is TV, so these *are* the TV
     // channels and categories.
@@ -853,7 +934,7 @@ private fun ManageFavoritesView(
             )
             Spacer(Modifier.width(16.dp))
             Text(
-                stringResource(R.string.favorites_hint_add),
+                stringResource(if (orderMode) R.string.favorites_hint_order else R.string.favorites_hint_add),
                 style = MaterialTheme.typography.bodySmall,
                 color = IptvPalette.TextTertiary,
             )
@@ -877,25 +958,97 @@ private fun ManageFavoritesView(
                     .padding(vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
+                item(key = "__order__") {
+                    CategoryItem(
+                        label = stringResource(R.string.favorites_order),
+                        selected = orderMode,
+                        onClick = {
+                            orderMode = true
+                            movingId = null
+                        },
+                    )
+                }
                 item(key = "__all__") {
                     CategoryItem(
                         label = stringResource(R.string.favorites_all_categories),
-                        selected = selectedCat == null,
-                        onClick = { selectedCat = null },
+                        selected = !orderMode && selectedCat == null,
+                        onClick = {
+                            orderMode = false
+                            selectedCat = null
+                        },
                     )
                 }
                 items(categories, key = { it }) { cat ->
                     CategoryItem(
                         label = cat,
-                        selected = selectedCat == cat,
-                        onClick = { selectedCat = cat },
+                        selected = !orderMode && selectedCat == cat,
+                        onClick = {
+                            orderMode = false
+                            selectedCat = cat
+                        },
                     )
                 }
             }
 
             Spacer(Modifier.width(16.dp))
 
-            if (visible.isEmpty()) {
+            if (orderMode) {
+                val favs = remember(state.favoriteIds, tvChannels) {
+                    inFavoriteOrder(tvChannels, state.favoriteIds)
+                }
+                if (favs.isEmpty()) {
+                    Box(
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = stringResource(R.string.favorites_empty_title),
+                            style = MaterialTheme.typography.titleMedium,
+                            color = IptvPalette.TextSecondary,
+                        )
+                    }
+                } else {
+                    val orderListState = androidx.tv.foundation.lazy.list.rememberTvLazyListState()
+                    TvLazyColumn(
+                        state = orderListState,
+                        modifier = Modifier.weight(1f).fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        contentPadding = PaddingValues(bottom = 48.dp),
+                    ) {
+                        itemsIndexed(favs, key = { _, ch -> ch.id }) { index, ch ->
+                            val moving = movingId == ch.id
+                            Box(
+                                modifier = Modifier.onPreviewKeyEvent { event ->
+                                    if (!moving || event.nativeKeyEvent.action != android.view.KeyEvent.ACTION_DOWN) {
+                                        return@onPreviewKeyEvent false
+                                    }
+                                    when (event.nativeKeyEvent.keyCode) {
+                                        android.view.KeyEvent.KEYCODE_DPAD_UP -> {
+                                            if (index > 0) onMoveFavorite(ch.id, -1)
+                                            true
+                                        }
+                                        android.view.KeyEvent.KEYCODE_DPAD_DOWN -> {
+                                            if (index < favs.lastIndex) onMoveFavorite(ch.id, +1)
+                                            true
+                                        }
+                                        android.view.KeyEvent.KEYCODE_BACK -> {
+                                            movingId = null
+                                            true
+                                        }
+                                        else -> false
+                                    }
+                                },
+                            ) {
+                                ChannelListRow(
+                                    channel = ch,
+                                    trailing = if (moving) "\u2195" else "${index + 1}",
+                                    onClick = { movingId = if (moving) null else ch.id },
+                                )
+                            }
+                        }
+                    }
+                }
+            } else if (visible.isEmpty()) {
                 Box(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     contentAlignment = Alignment.Center,
@@ -942,26 +1095,14 @@ private fun ChannelListRow(
         colors = ClickableSurfaceDefaults.colors(
             containerColor = IptvPalette.SurfaceElevated,
             contentColor = IptvPalette.TextPrimary,
-            focusedContainerColor = IptvPalette.SurfaceLift,
+            focusedContainerColor = FocusStyle.Fill,
             focusedContentColor = IptvPalette.TextPrimary,
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         modifier = Modifier
             .fillMaxWidth()
             .onFocusChanged { focused = it.isFocused }
-            // Tall dense list: a hair of scale + a left accent bar + a 2dp outline give
-            // the row unambiguous focus from 3m without displacing neighbours.
-            .then(
-                if (focused)
-                    Modifier.border(
-                        width = 2.dp,
-                        brush = Brush.horizontalGradient(
-                            listOf(IptvPalette.Accent, IptvPalette.AccentSoft),
-                        ),
-                        shape = shape,
-                    )
-                else Modifier,
-            ),
+            .tvFocus(focused, shape),
     ) {
         Row(
             modifier = Modifier
@@ -1013,7 +1154,7 @@ private fun ChannelListRow(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun CategoryItem(label: String, selected: Boolean, onClick: () -> Unit) {
+internal fun CategoryItem(label: String, selected: Boolean, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(8.dp)
     Surface(
@@ -1022,7 +1163,7 @@ private fun CategoryItem(label: String, selected: Boolean, onClick: () -> Unit) 
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (selected) IptvPalette.Accent else Color.Transparent,
             contentColor = if (selected) Color.White else IptvPalette.TextSecondary,
-            focusedContainerColor = if (selected) IptvPalette.Accent else IptvPalette.SurfaceLift,
+            focusedContainerColor = if (selected) IptvPalette.Accent else FocusStyle.Fill,
             focusedContentColor = Color.White,
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
@@ -1030,13 +1171,7 @@ private fun CategoryItem(label: String, selected: Boolean, onClick: () -> Unit) 
             .fillMaxWidth()
             .padding(horizontal = 8.dp)
             .onFocusChanged { focused = it.isFocused }
-            .then(
-                // Accent outline only when focused AND not already the selected row —
-                // the selected row already has the accent fill, a second outline would be noisy.
-                if (focused && !selected)
-                    Modifier.border(2.dp, IptvPalette.Accent, shape)
-                else Modifier,
-            ),
+            .tvFocus(focused, shape),
     ) {
         Text(
             text = label,
@@ -1058,11 +1193,15 @@ private fun TopBar(
     onOpenSettings: () -> Unit,
     onOpenProfiles: () -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenCategories: () -> Unit,
+    onOpenGuide: (() -> Unit)? = null,
     onRefresh: () -> Unit,
     refreshing: Boolean,
     lastRefreshAtMs: Long,
     error: String?,
     activeProfileName: String?,
+    activeProfileColorArgb: Int?,
+    activeProfileEmoji: String?,
     selectedTabFocusRequester: FocusRequester,
     onFocusChanged: (Boolean) -> Unit = {},
 ) {
@@ -1092,6 +1231,19 @@ private fun TopBar(
             )
             Spacer(Modifier.width(8.dp))
         }
+        TabPill(
+            label = stringResource(R.string.categories_open),
+            selected = false,
+            onClick = onOpenCategories,
+        )
+        if (onOpenGuide != null) {
+            Spacer(Modifier.width(8.dp))
+            TabPill(
+                label = stringResource(R.string.guide_open),
+                selected = false,
+                onClick = onOpenGuide,
+            )
+        }
         Spacer(Modifier.weight(1f))
         SourceStatusPill(
             refreshing = refreshing,
@@ -1103,7 +1255,12 @@ private fun TopBar(
         SearchChip(onClick = onOpenSearch)
         Spacer(Modifier.width(12.dp))
         if (activeProfileName != null) {
-            ProfileChip(name = activeProfileName, onClick = onOpenProfiles)
+            ProfileChip(
+                name = activeProfileName,
+                colorArgb = activeProfileColorArgb,
+                emoji = activeProfileEmoji,
+                onClick = onOpenProfiles,
+            )
             Spacer(Modifier.width(12.dp))
         }
         SettingsChip(onClick = onOpenSettings)
@@ -1166,7 +1323,7 @@ private fun SourceStatusPill(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun ProfileChip(name: String, onClick: () -> Unit) {
+private fun ProfileChip(name: String, colorArgb: Int?, emoji: String?, onClick: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val scale by animateFloatAsState(
         targetValue = if (focused) 1.08f else 1f,
@@ -1196,11 +1353,11 @@ private fun ProfileChip(name: String, onClick: () -> Unit) {
                 modifier = Modifier
                     .size(22.dp)
                     .clip(RoundedCornerShape(999.dp))
-                    .background(IptvPalette.Accent),
+                    .background(colorArgb?.let { Color(it) } ?: IptvPalette.Accent),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = name.take(1).uppercase(),
+                    text = emoji ?: name.take(1).uppercase(),
                     style = MaterialTheme.typography.labelMedium.copy(
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
@@ -1244,24 +1401,20 @@ private fun TabPill(
     focusRequester: FocusRequester? = null,
 ) {
     var focused by remember { mutableStateOf(false) }
-    val scale by animateFloatAsState(
-        targetValue = if (focused) 1.08f else 1f,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
-        label = "tab-scale",
-    )
+    val shape = RoundedCornerShape(999.dp)
     Surface(
         onClick = onClick,
-        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(999.dp)),
+        shape = ClickableSurfaceDefaults.shape(shape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (selected) IptvPalette.Accent else Color.Transparent,
             contentColor = if (selected) Color.White else IptvPalette.TextSecondary,
-            focusedContainerColor = if (selected) IptvPalette.Accent else IptvPalette.SurfaceElevated,
+            focusedContainerColor = if (selected) IptvPalette.Accent else FocusStyle.Fill,
             focusedContentColor = Color.White,
         ),
         scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
         modifier = Modifier
-            .scale(scale)
             .onFocusChanged { focused = it.isFocused }
+            .tvFocus(focused, shape, FocusStyle.ChipScale)
             .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier),
     ) {
         Text(
@@ -1343,7 +1496,10 @@ private fun SettingsChip(onClick: () -> Unit) {
 @Composable
 private fun HeroCarousel(
     heroes: List<Channel>,
+    isAtTop: () -> Boolean,
+    focusController: RailFocusController? = null,
     hoverChannel: Channel? = null,
+    trailersEnabled: Boolean = true,
     lastWatchedId: String?,
     nowPlayingByEpgId: Map<String, String>,
     progressById: Map<String, Float>,
@@ -1353,7 +1509,19 @@ private fun HeroCarousel(
     if (heroes.isEmpty()) return
     // Single focus requester shared across rotations so the Play button keeps focus.
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focusRequester.requestFocus() } }
+    LaunchedEffect(Unit) {
+        if (focusController?.hasPendingRestore() == true) {
+            // A rail card is about to reclaim focus. If it never shows up (catalogue
+            // changed meanwhile), fall back to the hero so focus isn't lost.
+            kotlinx.coroutines.delay(RESTORE_FALLBACK_MS)
+            if (focusController.hasPendingRestore()) {
+                focusController.abandonRestore()
+                runCatching { focusRequester.requestFocus() }
+            }
+        } else {
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
 
     // Returning from the player: re-grab focus on the Play button so the D-pad has a clear
     // landing spot. Without this the user lands somewhere unpredictable (often the top-bar)
@@ -1361,7 +1529,9 @@ private fun HeroCarousel(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
+            // Only when the user is at the top — deeper in the rails, grabbing the hero
+            // would scroll them away from where they were.
+            if (event == Lifecycle.Event.ON_RESUME && isAtTop()) {
                 runCatching { focusRequester.requestFocus() }
             }
         }
@@ -1370,9 +1540,23 @@ private fun HeroCarousel(
     }
 
     var index by remember(heroes) { mutableStateOf(0) }
-    // Auto-rotate only when we actually have multiple heroes. A single-item carousel would
-    // just re-key the AnimatedContent for no reason.
-    if (heroes.size > 1) {
+    var manualStep by remember { mutableStateOf(0) }
+    val step: (Int) -> Unit = { delta ->
+        index = ((index + delta) % heroes.size + heroes.size) % heroes.size
+        manualStep++
+    }
+    // After a manual step the old banner (and its focused Play button) leaves the
+    // composition; hand focus to the new banner's Play button once the swap has settled.
+    LaunchedEffect(manualStep) {
+        if (manualStep > 0) {
+            kotlinx.coroutines.delay(HERO_SWAP_FOCUS_DELAY_MS)
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
+    // Pause while the hero holds focus: rotating swaps the focused Play button out of the
+    // composition (focus jumps away) and OK could start a title the user didn't see.
+    var heroFocused by remember { mutableStateOf(false) }
+    if (heroes.size > 1 && !heroFocused) {
         LaunchedEffect(heroes) {
             while (true) {
                 kotlinx.coroutines.delay(HERO_ROTATE_MS)
@@ -1381,7 +1565,12 @@ private fun HeroCarousel(
         }
     }
 
-    Box(modifier = Modifier.fillMaxWidth()) {
+    Box(
+        modifier = Modifier.fillMaxWidth().onFocusChanged {
+            heroFocused = it.hasFocus
+            if (it.hasFocus) focusController?.onHeroFocused()
+        },
+    ) {
         AnimatedContent(
             targetState = index.coerceIn(0, heroes.lastIndex),
             transitionSpec = { fadeIn(tween(600)) togetherWith fadeOut(tween(600)) },
@@ -1394,6 +1583,10 @@ private fun HeroCarousel(
                 nowPlaying = channel.epgChannelId?.let { nowPlayingByEpgId[it] },
                 progressFraction = progressById[channel.id],
                 focusRequester = focusRequester,
+                hoverChannel = hoverChannel,
+                trailersEnabled = trailersEnabled,
+                onPrev = if (heroes.size > 1) ({ step(-1) }) else null,
+                onNext = if (heroes.size > 1) ({ step(+1) }) else null,
                 onPlay = { onPlay(channel) },
                 onMoreInfo = { onMoreInfo(channel) },
             )
@@ -1439,6 +1632,10 @@ private fun HeroBanner(
     nowPlaying: String?,
     progressFraction: Float?,
     focusRequester: FocusRequester? = null,
+    hoverChannel: Channel? = null,
+    trailersEnabled: Boolean = true,
+    onPrev: (() -> Unit)? = null,
+    onNext: (() -> Unit)? = null,
     onPlay: () -> Unit,
     onMoreInfo: () -> Unit = {},
 ) {
@@ -1448,6 +1645,17 @@ private fun HeroBanner(
     val activeFocus = focusRequester ?: localFocus
     LaunchedEffect(focusRequester == null) {
         if (focusRequester == null) runCatching { localFocus.requestFocus() }
+    }
+
+    if (channel.type == ContentType.TV) {
+        CompactTvHero(
+            channel = channel,
+            isLastWatched = isLastWatched,
+            nowPlaying = nowPlaying,
+            focusRequester = activeFocus,
+            onPlay = onPlay,
+        )
+        return
     }
 
     // Ken Burns — a slow, subtle scale that loops forever. The backdrop never sits still,
@@ -1468,23 +1676,37 @@ private fun HeroBanner(
     // YouTube player errors out.
     var trailerKey by remember(channel.id) { mutableStateOf<String?>(null) }
     var trailerActive by remember(channel.id) { mutableStateOf(false) }
+    var trailerMuted by remember(channel.id) { mutableStateOf(true) }
+    var backdropUrl by remember(channel.id) { mutableStateOf<String?>(null) }
     if (channel.type == ContentType.MOVIE && TmdbClient.isConfigured) {
-        LaunchedEffect(channel.id) {
-            val bundle = runCatching {
-                IptvApp.get().tmdbMovieDetails.lookupMovie(
-                    channelId = channel.id,
-                    title = TmdbCatalogueMatcher.normalize(channel.name).ifBlank { channel.name },
-                    releaseYear = null,
-                )
-            }.getOrNull()
+        LaunchedEffect(channel.id, trailersEnabled) {
+            val bundle = lookupHeroBundle(channel)
+            backdropUrl = bundle?.backdropUrl
+            if (!trailersEnabled) {
+                trailerActive = false
+                return@LaunchedEffect
+            }
             val key = bundle?.trailerYoutubeKey ?: return@LaunchedEffect
             trailerKey = key
             kotlinx.coroutines.delay(HERO_TRAILER_DELAY_MS)
             trailerActive = true
         }
     }
+
+    // Focused rail card repaints the hero background (debounced upstream).
+    var hoverBackdrop by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(hoverChannel?.id) {
+        val hover = hoverChannel
+        hoverBackdrop = when {
+            hover == null || hover.id == channel.id -> null
+            hover.type == ContentType.MOVIE && TmdbClient.isConfigured ->
+                lookupHeroBundle(hover)?.backdropUrl ?: hover.logoUrl
+            hover.type == ContentType.SERIES -> hover.logoUrl
+            else -> null
+        }
+    }
     val trailerAlpha by animateFloatAsState(
-        targetValue = if (trailerActive && trailerKey != null) 1f else 0f,
+        targetValue = if (trailerActive && trailerKey != null && hoverBackdrop == null) 1f else 0f,
         animationSpec = tween(600),
         label = "hero-trailer-alpha",
     )
@@ -1492,7 +1714,7 @@ private fun HeroBanner(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(480.dp)
+            .height(HERO_HEIGHT)
             .padding(horizontal = 48.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(IptvPalette.SurfaceLift),
@@ -1500,9 +1722,9 @@ private fun HeroBanner(
         val isPoster = channel.type != ContentType.TV
         val logo = channel.logoUrl
 
-        if (isPoster && logo != null) {
+        if (isPoster && (backdropUrl ?: logo) != null) {
             AsyncImage(
-                model = logo,
+                model = backdropUrl ?: logo,
                 contentDescription = channel.name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier
@@ -1538,7 +1760,23 @@ private fun HeroBanner(
                 HeroTrailerPlayer(
                     youtubeKey = trailerKey!!,
                     modifier = Modifier.fillMaxSize(),
+                    muted = trailerMuted,
                     onError = { trailerActive = false },
+                )
+            }
+        }
+
+        androidx.compose.animation.Crossfade(
+            targetState = hoverBackdrop,
+            animationSpec = tween(500),
+            label = "hero-hover-backdrop",
+        ) { url ->
+            if (url != null) {
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
         }
@@ -1570,7 +1808,7 @@ private fun HeroBanner(
             modifier = Modifier
                 .fillMaxHeight()
                 .fillMaxWidth(0.55f)
-                .padding(start = 48.dp, top = 56.dp, bottom = 40.dp),
+                .padding(start = 48.dp, top = 28.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.Bottom,
         ) {
             // Status pills — show at most one so we don't stack too much chrome over the art.
@@ -1622,11 +1860,32 @@ private fun HeroBanner(
                     )
                 }
             }
-            Spacer(Modifier.height(20.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.height(16.dp))
+            val showSound = trailerActive && trailerKey != null && hoverBackdrop == null
+            var focusedButton by remember { mutableStateOf(-1) }
+            val lastButton = when {
+                showSound -> 2
+                channel.type == ContentType.MOVIE -> 1
+                else -> 0
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.onPreviewKeyEvent { event ->
+                    if (event.nativeKeyEvent.action != android.view.KeyEvent.ACTION_DOWN) return@onPreviewKeyEvent false
+                    when (event.nativeKeyEvent.keyCode) {
+                        android.view.KeyEvent.KEYCODE_DPAD_LEFT ->
+                            if (focusedButton == 0 && onPrev != null) { onPrev(); true } else false
+                        android.view.KeyEvent.KEYCODE_DPAD_RIGHT ->
+                            if (focusedButton == lastButton && onNext != null) { onNext(); true } else false
+                        else -> false
+                    }
+                },
+            ) {
                 Button(
                     onClick = onPlay,
-                    modifier = Modifier.focusRequester(activeFocus),
+                    modifier = Modifier
+                        .focusRequester(activeFocus)
+                        .onFocusChanged { if (it.isFocused) focusedButton = 0 },
                 ) {
                     Icon(
                         imageVector = Icons.Filled.PlayArrow,
@@ -1643,6 +1902,7 @@ private fun HeroBanner(
                     Spacer(Modifier.width(12.dp))
                     Button(
                         onClick = onMoreInfo,
+                        modifier = Modifier.onFocusChanged { if (it.isFocused) focusedButton = 1 },
                         colors = androidx.tv.material3.ButtonDefaults.colors(
                             containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.65f),
                             contentColor = IptvPalette.TextPrimary,
@@ -1659,6 +1919,27 @@ private fun HeroBanner(
                             text = stringResource(R.string.hero_more_info),
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
                             modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                        )
+                    }
+                }
+                if (showSound) {
+                    Spacer(Modifier.width(12.dp))
+                    Button(
+                        onClick = { trailerMuted = !trailerMuted },
+                        modifier = Modifier.onFocusChanged { if (it.isFocused) focusedButton = 2 },
+                        colors = androidx.tv.material3.ButtonDefaults.colors(
+                            containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.65f),
+                            contentColor = IptvPalette.TextPrimary,
+                            focusedContainerColor = IptvPalette.SurfaceElevated,
+                            focusedContentColor = IptvPalette.TextPrimary,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = if (trailerMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = stringResource(
+                                if (trailerMuted) R.string.hero_sound_on else R.string.hero_sound_off,
+                            ),
+                            modifier = Modifier.padding(horizontal = 6.dp).size(22.dp),
                         )
                     }
                 }
@@ -1732,6 +2013,9 @@ private fun AccentPill(text: String) {
 @Composable
 private fun RailRow(
     rail: Rail,
+    onSeeAll: (() -> Unit)? = null,
+    focusController: RailFocusController? = null,
+    onContextMenu: (Channel) -> Unit = {},
     contentType: ContentType,
     progressById: Map<String, Float>,
     nowPlayingByEpgId: Map<String, String> = emptyMap(),
@@ -1745,6 +2029,10 @@ private fun RailRow(
         contentType != ContentType.TV &&
         rail.channels.size >= 3
     val railTitle = if (isTopTen) stringResource(R.string.rail_top_ten) else rail.title
+    val restoreId = focusController?.restoreIdFor(rail.title)
+    val rowState = remember(rail.title) {
+        androidx.tv.foundation.lazy.list.TvLazyListState(focusController?.restoreIndexFor(rail.title) ?: 0, 0)
+    }
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(start = 48.dp, end = 48.dp, bottom = 12.dp),
@@ -1770,6 +2058,7 @@ private fun RailRow(
         if (isTopTen) {
             val topTen = remember(rail.channels) { rail.channels.take(10) }
             TvLazyRow(
+                state = rowState,
                 // Top-10 cards are noticeably wider because of the left-side numeral, so
                 // a touch more outer padding keeps the first rank from getting clipped.
                 contentPadding = PaddingValues(start = 48.dp, end = 48.dp),
@@ -1781,22 +2070,36 @@ private fun RailRow(
                         channel = channel,
                         progressFraction = progressById[channel.id],
                         onClick = { onPlay(channel) },
+                        onHover = onHover,
+                        focusRequester = cardRequesterFor(channel, restoreId, focusController),
+                        onFocused = { focusController?.onCardFocused(rail.title, channel, i) },
+                        onBlurred = { focusController?.onCardBlurred(channel.id) },
+                        onLongClick = { onContextMenu(channel) },
                     )
                 }
             }
         } else {
             TvLazyRow(
+                state = rowState,
                 contentPadding = PaddingValues(horizontal = 48.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                items(rail.channels, key = { it.id }) { channel ->
+                itemsIndexed(rail.channels, key = { _, ch -> ch.id }) { i, channel ->
                     val progress = progressById[channel.id]
+                    val requester = cardRequesterFor(channel, restoreId, focusController)
+                    val onFocused: () -> Unit = { focusController?.onCardFocused(rail.title, channel, i) }
+                    val onBlurred: () -> Unit = { focusController?.onCardBlurred(channel.id) }
+                    val onLongClick: () -> Unit = { onContextMenu(channel) }
                     when (contentType) {
                         ContentType.TV -> LogoCard(
                             channel = channel,
                             progressFraction = progress,
                             nowPlaying = channel.epgChannelId?.let { nowPlayingByEpgId[it] },
                             onClick = { onPlay(channel) },
+                            focusRequester = requester,
+                            onFocused = onFocused,
+                            onBlurred = onBlurred,
+                            onLongClick = onLongClick,
                         )
                         ContentType.MOVIE, ContentType.SERIES ->
                             PosterCard(
@@ -1804,7 +2107,19 @@ private fun RailRow(
                                 progressFraction = progress,
                                 onClick = { onPlay(channel) },
                                 onHover = onHover,
+                                focusRequester = requester,
+                                onFocused = onFocused,
+                                onBlurred = onBlurred,
+                                onLongClick = onLongClick,
                             )
+                    }
+                }
+                if (onSeeAll != null) {
+                    item(key = "__see_all__") {
+                        SeeAllCard(
+                            isPoster = contentType != ContentType.TV,
+                            onClick = onSeeAll,
+                        )
                     }
                 }
             }
@@ -1824,6 +2139,11 @@ private fun TopTenCard(
     channel: Channel,
     progressFraction: Float?,
     onClick: () -> Unit,
+    onHover: ((Channel?) -> Unit)? = null,
+    focusRequester: FocusRequester? = null,
+    onFocused: () -> Unit = {},
+    onBlurred: () -> Unit = {},
+    onLongClick: (() -> Unit)? = null,
 ) {
     // Layout: a Row where the rank numeral takes the left third and the poster sits on top
     // of its right portion. Mirrors the Netflix spec: numeral is huge, ~80 % of the card
@@ -1862,6 +2182,11 @@ private fun TopTenCard(
                 channel = channel,
                 progressFraction = progressFraction,
                 onClick = onClick,
+                onHover = onHover,
+                focusRequester = focusRequester,
+                onFocused = onFocused,
+                onBlurred = onBlurred,
+                onLongClick = onLongClick,
             )
         }
     }
@@ -1869,13 +2194,24 @@ private fun TopTenCard(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun LogoCard(
+internal fun LogoCard(
     channel: Channel,
     progressFraction: Float?,
     nowPlaying: String? = null,
     onClick: () -> Unit,
+    focusRequester: FocusRequester? = null,
+    onFocused: () -> Unit = {},
+    onBlurred: () -> Unit = {},
+    onLongClick: (() -> Unit)? = null,
 ) {
-    FocusableCard(width = 220.dp, height = 124.dp, onClick = onClick) { focused ->
+    FocusableCard(
+        width = 220.dp,
+        height = 124.dp,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        focusRequester = focusRequester,
+        onFocusChange = { if (it) onFocused() else onBlurred() },
+    ) { focused ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1952,17 +2288,26 @@ private fun LogoCard(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun PosterCard(
+internal fun PosterCard(
     channel: Channel,
     progressFraction: Float?,
     onClick: () -> Unit,
     onHover: ((Channel?) -> Unit)? = null,
+    focusRequester: FocusRequester? = null,
+    onFocused: () -> Unit = {},
+    onBlurred: () -> Unit = {},
+    onLongClick: (() -> Unit)? = null,
 ) {
     FocusableCard(
         width = 168.dp,
         height = 252.dp,
         onClick = onClick,
-        onFocusChange = { focused -> onHover?.invoke(if (focused) channel else null) },
+        onLongClick = onLongClick,
+        focusRequester = focusRequester,
+        onFocusChange = { focused ->
+            onHover?.invoke(if (focused) channel else null)
+            if (focused) onFocused() else onBlurred()
+        },
     ) { focused ->
         Box(modifier = Modifier.fillMaxSize().background(IptvPalette.SurfaceElevated)) {
             if (channel.logoUrl != null) {
@@ -2053,6 +2398,8 @@ private fun FocusableCard(
     width: Dp,
     height: Dp,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    focusRequester: FocusRequester? = null,
     onFocusChange: ((Boolean) -> Unit)? = null,
     content: @Composable (focused: Boolean) -> Unit,
 ) {
@@ -2069,6 +2416,7 @@ private fun FocusableCard(
     val shape = RoundedCornerShape(14.dp)
     Surface(
         onClick = onClick,
+        onLongClick = onLongClick,
         shape = ClickableSurfaceDefaults.shape(shape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = IptvPalette.SurfaceLift,
@@ -2080,6 +2428,7 @@ private fun FocusableCard(
         modifier = Modifier
             .size(width = width, height = height)
             .scale(scale)
+            .then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier)
             .onFocusChanged { focused = it.isFocused }
             .then(
                 if (focused)
@@ -2113,7 +2462,7 @@ private fun CenterMessage(text: String) {
  * A slow alpha pulse provides just enough motion to feel alive without distracting.
  */
 @Composable
-private fun ChannelsSkeleton() {
+private fun ChannelsSkeleton(progress: nl.vanvrouwerff.iptv.data.repo.ImportProgress? = null) {
     val infinite = rememberInfiniteTransition(label = "skeleton")
     val alpha by infinite.animateFloat(
         initialValue = 0.25f,
@@ -2142,14 +2491,33 @@ private fun ChannelsSkeleton() {
             SkeletonBlock(width = 140.dp, height = 24.dp, shape = RoundedCornerShape(999.dp), color = block)
         }
 
-        // Hero banner placeholder.
-        SkeletonBlock(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp),
-            width = null,
-            height = 360.dp,
-            shape = RoundedCornerShape(24.dp),
-            color = block,
-        )
+        // Hero banner placeholder, carrying the import progress on a first run.
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            SkeletonBlock(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 48.dp),
+                width = null,
+                height = HERO_HEIGHT,
+                shape = RoundedCornerShape(24.dp),
+                color = block,
+            )
+            importProgressLabel(progress)?.let { label ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = IptvPalette.Accent,
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            color = IptvPalette.TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                    )
+                }
+            }
+        }
 
         Spacer(Modifier.height(28.dp))
 
@@ -2243,5 +2611,336 @@ private fun ErrorState(message: String, onRetry: () -> Unit, onOpenSettings: () 
             Button(onClick = onRetry) { Text(stringResource(R.string.error_retry)) }
             Button(onClick = onOpenSettings) { Text(stringResource(R.string.channels_open_settings)) }
         }
+    }
+}
+
+private const val RESTORE_FALLBACK_MS: Long = 800L
+
+/**
+ * Remembers which rail card had focus so the rails view can put the user back there after
+ * a detail screen, and hands out a one-shot restore target to the matching card.
+ */
+@androidx.compose.runtime.Stable
+class RailFocusController(
+    private val type: ContentType,
+    initial: RailFocusMemory?,
+    private val listState: androidx.tv.foundation.lazy.list.TvLazyListState,
+    private val onRemember: (ContentType, RailFocusMemory?) -> Unit,
+) {
+    private var pending by mutableStateOf(initial)
+
+    fun hasPendingRestore(): Boolean = pending != null
+    fun restoreIdFor(railKey: String): String? = pending?.takeIf { it.railKey == railKey }?.itemId
+    fun restoreIndexFor(railKey: String): Int = pending?.takeIf { it.railKey == railKey }?.itemIndex ?: 0
+    fun restored() { pending = null }
+    fun abandonRestore() { pending = null }
+
+    var focusedCard: Channel? = null
+        private set
+    private val requesters = HashMap<String, FocusRequester>()
+
+    fun register(itemId: String, requester: FocusRequester) { requesters[itemId] = requester }
+    fun unregister(itemId: String, requester: FocusRequester) {
+        if (requesters[itemId] === requester) requesters.remove(itemId)
+    }
+    fun refocus(itemId: String) { runCatching { requesters[itemId]?.requestFocus() } }
+
+    fun onCardBlurred(itemId: String) {
+        if (focusedCard?.id == itemId) focusedCard = null
+    }
+
+    fun onCardFocused(railKey: String, channel: Channel, itemIndex: Int) {
+        focusedCard = channel
+        onRemember(
+            type,
+            RailFocusMemory(
+                railKey = railKey,
+                itemId = channel.id,
+                itemIndex = itemIndex,
+                listIndex = listState.firstVisibleItemIndex,
+                listOffset = listState.firstVisibleItemScrollOffset,
+            ),
+        )
+    }
+
+    fun onHeroFocused() {
+        focusedCard = null
+        if (pending == null) onRemember(type, null)
+    }
+}
+
+@Composable
+private fun cardRequesterFor(
+    channel: Channel,
+    restoreId: String?,
+    controller: RailFocusController?,
+): FocusRequester? {
+    if (controller == null) return null
+    val requester = remember { FocusRequester() }
+    DisposableEffect(channel.id, requester) {
+        controller.register(channel.id, requester)
+        onDispose { controller.unregister(channel.id, requester) }
+    }
+    if (restoreId != null && channel.id == restoreId) {
+        LaunchedEffect(Unit) {
+            androidx.compose.runtime.withFrameNanos { }
+            if (runCatching { requester.requestFocus() }.isSuccess) controller.restored()
+        }
+    }
+    return requester
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
+@Composable
+private fun CardContextMenu(
+    channel: Channel,
+    isFavorite: Boolean,
+    hasProgress: Boolean,
+    onToggleFavorite: () -> Unit,
+    onRemoveFromContinue: () -> Unit,
+    onMarkWatched: () -> Unit,
+    onManageChannels: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val firstFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { firstFocus.requestFocus() } }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(IptvPalette.BackgroundDeep.copy(alpha = 0.6f)),
+    )
+    Column(
+        modifier = modifier
+            .focusProperties { exit = { FocusRequester.Cancel } }
+            .focusGroup()
+            .width(420.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(IptvPalette.SurfaceLift)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            text = channel.name,
+            style = MaterialTheme.typography.titleMedium.copy(
+                fontWeight = FontWeight.Bold,
+                color = IptvPalette.TextPrimary,
+            ),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(4.dp))
+        val isTv = channel.type == ContentType.TV
+        val favLabel = when {
+            isTv && isFavorite -> R.string.context_favorite_remove
+            isTv -> R.string.context_favorite_add
+            isFavorite -> R.string.detail_remove_from_list
+            else -> R.string.detail_add_to_list
+        }
+        ContextMenuItem(
+            label = stringResource(favLabel),
+            onClick = onToggleFavorite,
+            modifier = Modifier.focusRequester(firstFocus),
+        )
+        if (!isTv && hasProgress) {
+            ContextMenuItem(stringResource(R.string.context_remove_continue), onRemoveFromContinue)
+        }
+        if (!isTv) {
+            ContextMenuItem(stringResource(R.string.context_mark_watched), onMarkWatched)
+        }
+        if (isTv) {
+            ContextMenuItem(stringResource(R.string.favorites_manage), onManageChannels)
+        }
+        ContextMenuItem(stringResource(R.string.context_close), onDismiss)
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun ContextMenuItem(label: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(10.dp)
+    Surface(
+        onClick = onClick,
+        shape = ClickableSurfaceDefaults.shape(shape),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = IptvPalette.SurfaceElevated,
+            contentColor = IptvPalette.TextPrimary,
+            focusedContainerColor = FocusStyle.Fill,
+            focusedContentColor = IptvPalette.TextPrimary,
+        ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        modifier = modifier
+            .fillMaxWidth()
+            .onFocusChanged { focused = it.isFocused }
+            .tvFocus(focused, shape),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        )
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun SeeAllCard(isPoster: Boolean, onClick: () -> Unit) {
+    FocusableCard(
+        width = if (isPoster) 168.dp else 220.dp,
+        height = if (isPoster) 252.dp else 124.dp,
+        onClick = onClick,
+    ) { focused ->
+        Box(
+            modifier = Modifier.fillMaxSize().background(IptvPalette.SurfaceElevated),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = if (focused) Color.White else IptvPalette.TextSecondary,
+                    modifier = Modifier.size(32.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.rail_see_all),
+                    style = MaterialTheme.typography.labelLarge.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (focused) Color.White else IptvPalette.TextSecondary,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+private suspend fun lookupHeroBundle(channel: Channel) = runCatching {
+    IptvApp.get().tmdbMovieDetails.lookupMovie(
+        channelId = channel.id,
+        title = TmdbCatalogueMatcher.normalize(channel.name).ifBlank { channel.name },
+        releaseYear = null,
+    )
+}.getOrNull()
+
+/**
+ * Live-TV hero: a compact "last watched" card with Now/Next, so the favourites rail sits
+ * directly underneath in view instead of below a 340dp banner of a channel logo.
+ */
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun CompactTvHero(
+    channel: Channel,
+    isLastWatched: Boolean,
+    nowPlaying: String?,
+    focusRequester: FocusRequester,
+    onPlay: () -> Unit,
+) {
+    var nextTitle by remember(channel.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(channel.epgChannelId) {
+        val key = channel.epgChannelId ?: return@LaunchedEffect
+        nextTitle = runCatching {
+            IptvApp.get().database.channelDao()
+                .getNextProgrammeFor(key, System.currentTimeMillis())?.title
+        }.getOrNull()
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 48.dp)
+            .height(COMPACT_TV_HERO_HEIGHT)
+            .clip(RoundedCornerShape(20.dp))
+            .background(
+                Brush.horizontalGradient(
+                    listOf(IptvPalette.AccentDeep.copy(alpha = 0.55f), IptvPalette.SurfaceLift),
+                ),
+            )
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 180.dp, height = 104.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(IptvPalette.SurfaceElevated),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (channel.logoUrl != null) {
+                AsyncImage(
+                    model = channel.logoUrl,
+                    contentDescription = channel.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().padding(12.dp),
+                )
+            } else {
+                Text(
+                    text = channel.name.take(2).uppercase(),
+                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Black),
+                    color = IptvPalette.TextSecondary,
+                )
+            }
+        }
+        Spacer(Modifier.width(24.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            if (isLastWatched) {
+                AccentPill(text = stringResource(R.string.channels_last_watched))
+                Spacer(Modifier.height(8.dp))
+            }
+            Text(
+                text = channel.name,
+                style = MaterialTheme.typography.titleLarge.copy(
+                    fontWeight = FontWeight.ExtraBold,
+                    color = IptvPalette.TextPrimary,
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (!nowPlaying.isNullOrBlank()) {
+                Text(
+                    text = stringResource(R.string.epg_now_prefix, nowPlaying),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = IptvPalette.AccentSoft,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            nextTitle?.let {
+                Text(
+                    text = stringResource(R.string.player_banner_next, it),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IptvPalette.TextTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.width(16.dp))
+        Button(onClick = onPlay, modifier = Modifier.focusRequester(focusRequester)) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.padding(start = 10.dp).size(22.dp),
+            )
+            Text(
+                text = stringResource(R.string.channels_play),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+            )
+        }
+    }
+}
+
+private val COMPACT_TV_HERO_HEIGHT = 140.dp
+
+@Composable
+private fun importProgressLabel(progress: nl.vanvrouwerff.iptv.data.repo.ImportProgress?): String? {
+    if (progress == null) return null
+    val count = java.text.NumberFormat.getIntegerInstance(java.util.Locale("nl", "NL")).format(progress.count)
+    return when (progress.stage) {
+        nl.vanvrouwerff.iptv.data.repo.ImportProgress.Stage.Downloading -> stringResource(R.string.import_downloading)
+        nl.vanvrouwerff.iptv.data.repo.ImportProgress.Stage.Live -> stringResource(R.string.import_live, count)
+        nl.vanvrouwerff.iptv.data.repo.ImportProgress.Stage.Movies -> stringResource(R.string.import_movies, count)
+        nl.vanvrouwerff.iptv.data.repo.ImportProgress.Stage.Series -> stringResource(R.string.import_series, count)
+        nl.vanvrouwerff.iptv.data.repo.ImportProgress.Stage.Saving -> stringResource(R.string.import_saving, count)
     }
 }

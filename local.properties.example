@@ -8,3 +8,9 @@ sdk.dir=/path/to/your/Android/sdk
 # (the app keeps working, the trending/popular sections just stay empty).
 # Get one at https://www.themoviedb.org/settings/api
 TMDB_BEARER_TOKEN=
+
+# Optional release signing. Without these, release builds are signed with the debug key.
+# RELEASE_STORE_FILE=keystore/release.jks
+# RELEASE_STORE_PASSWORD=
+# RELEASE_KEY_ALIAS=
+# RELEASE_KEY_PASSWORD=

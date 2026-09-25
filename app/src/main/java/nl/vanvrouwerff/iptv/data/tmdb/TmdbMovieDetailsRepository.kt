@@ -48,10 +48,13 @@ class TmdbMovieDetailsRepository {
             return null
         }
         val now = System.currentTimeMillis()
-        val cached = cache[channelId]
-        if (cached != null && now - cached.fetchedAt < CACHE_TTL_MS) {
-            Log.i(TAG, "cache hit for $channelId")
-            return cached.bundle
+        // The year is part of the key: a year-less lookup (hero preload) can hit a remake,
+        // and must not be served to the detail screen that does know the year.
+        val key = "$channelId|${releaseYear ?: ""}"
+        val cached = cache[key]
+        if (cached != null) {
+            val ttl = if (cached.bundle != null) CACHE_TTL_MS else MISS_TTL_MS
+            if (now - cached.fetchedAt < ttl) return cached.bundle
         }
 
         val bundle = runCatching {
@@ -61,23 +64,13 @@ class TmdbMovieDetailsRepository {
             return null
         }
 
-        if (bundle != null) {
-            cache[channelId] = CacheEntry(bundle, now)
-            Log.i(TAG, "cached bundle for $channelId tmdbId=${bundle.tmdbId}")
-        } else {
-            Log.i(TAG, "fetchFresh returned null for \"$title\" year=$releaseYear")
-        }
+        cache[key] = CacheEntry(bundle, now)
         return bundle
     }
 
     private suspend fun fetchFresh(title: String, releaseYear: Int?): MovieDetailsBundle? {
         val query = title.trim()
-        Log.i(TAG, "searchMovie query=\"$query\" year=$releaseYear")
-        val searchResults = runCatching {
-            TmdbClient.api.searchMovie(query = query, year = releaseYear)
-        }.onFailure { Log.w(TAG, "searchMovie #1 threw", it) }
-            .getOrNull()?.results.orEmpty()
-        Log.i(TAG, "searchMovie #1 returned ${searchResults.size} results")
+        val searchResults = TmdbClient.api.searchMovie(query = query, year = releaseYear).results
 
         val candidates = if (searchResults.isNotEmpty()) searchResults
         else {
@@ -85,24 +78,16 @@ class TmdbMovieDetailsRepository {
             if (normalised.isBlank() || normalised == query) {
                 emptyList()
             } else {
-                Log.i(TAG, "retry searchMovie normalised=\"$normalised\"")
-                runCatching {
-                    TmdbClient.api.searchMovie(query = normalised, year = releaseYear)
-                }.onFailure { Log.w(TAG, "searchMovie retry threw", it) }
-                    .getOrNull()?.results.orEmpty()
-                    .also { Log.i(TAG, "retry returned ${it.size} results") }
+                TmdbClient.api.searchMovie(query = normalised, year = releaseYear).results
             }
         }
 
         val hit = candidates.firstOrNull() ?: return null
-        Log.i(TAG, "top hit tmdbId=${hit.id} title=\"${hit.title}\" date=${hit.releaseDate}")
-        val details = runCatching {
-            TmdbClient.api.getMovieDetails(hit.id)
-        }.onFailure { Log.w(TAG, "getMovieDetails threw for ${hit.id}", it) }
-            .getOrNull() ?: return null
+        val details = TmdbClient.api.getMovieDetails(hit.id)
 
         return MovieDetailsBundle(
             tmdbId = hit.id,
+            backdropUrl = details.backdropPath?.let { BACKDROP_BASE + it },
             trailerYoutubeKey = pickTrailerKey(details.videos?.results.orEmpty()),
             cast = details.credits?.cast.orEmpty().asSequence()
                 .sortedBy { it.order }
@@ -194,7 +179,8 @@ class TmdbMovieDetailsRepository {
                     "built movie index size=${index.size} from ${rows.size} rows " +
                         "in ${System.currentTimeMillis() - started} ms",
                 )
-                movieIndex = index
+                // An empty index means the catalogue hasn't landed yet; don't pin that.
+                if (index.isNotEmpty()) movieIndex = index
                 index
             }
         }
@@ -207,6 +193,8 @@ class TmdbMovieDetailsRepository {
 
     data class MovieDetailsBundle(
         val tmdbId: Long,
+        /** Landscape still (w1280) — the hero and detail backdrop; null when TMDB has none. */
+        val backdropUrl: String? = null,
         /** 11-char YouTube video id, to be wrapped in a YouTube URL at render time. */
         val trailerYoutubeKey: String?,
         val cast: List<CastEntry>,
@@ -220,13 +208,15 @@ class TmdbMovieDetailsRepository {
         val profilePath: String?,
     )
 
-    private data class CacheEntry(val bundle: MovieDetailsBundle, val fetchedAt: Long)
+    private data class CacheEntry(val bundle: MovieDetailsBundle?, val fetchedAt: Long)
 
     companion object {
         private const val TAG = "TmdbMovieDetails"
         private const val CACHE_TTL_MS: Long = 24L * 3_600_000L
+        private const val MISS_TTL_MS: Long = 3_600_000L
         private const val MAX_CACHE_ENTRIES: Int = 80
         /** Netflix tops out around 8–10 faces in the cast strip; anything more is noise. */
         private const val MAX_CAST: Int = 10
+        private const val BACKDROP_BASE = "https://image.tmdb.org/t/p/w1280"
     }
 }

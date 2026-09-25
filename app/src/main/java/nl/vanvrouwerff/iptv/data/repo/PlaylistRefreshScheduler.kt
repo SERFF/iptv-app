@@ -18,9 +18,18 @@ object PlaylistRefreshScheduler {
 
     fun apply(context: Context, enabled: Boolean, hour: Int) {
         val wm = WorkManager.getInstance(context)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (!enabled) {
             wm.cancelUniqueWork(PlaylistRefreshWorker.UNIQUE_NAME)
+            prefs.edit().remove(KEY_APPLIED_HOUR).apply()
             return
+        }
+        // This also runs when WorkManager spawns the process for the worker itself; only
+        // re-enqueue when the hour actually changed so we never cancel a running refresh.
+        val policy = if (prefs.getInt(KEY_APPLIED_HOUR, -1) == hour) {
+            ExistingPeriodicWorkPolicy.KEEP
+        } else {
+            ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE
         }
 
         val constraints = Constraints.Builder()
@@ -32,14 +41,13 @@ object PlaylistRefreshScheduler {
             .setInitialDelay(initialDelayMinutesUntil(hour), TimeUnit.MINUTES)
             .build()
 
-        // UPDATE rather than KEEP: when the user changes the hour we want WorkManager to
-        // re-anchor the schedule to the new time, not silently keep running at the old one.
-        wm.enqueueUniquePeriodicWork(
-            PlaylistRefreshWorker.UNIQUE_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            request,
-        )
+        // UPDATE would keep the old period anchor, so a changed hour would never take effect.
+        wm.enqueueUniquePeriodicWork(PlaylistRefreshWorker.UNIQUE_NAME, policy, request)
+        prefs.edit().putInt(KEY_APPLIED_HOUR, hour).apply()
     }
+
+    private const val PREFS = "refresh_scheduler"
+    private const val KEY_APPLIED_HOUR = "applied_hour"
 
     /**
      * Minutes from now until the next occurrence of `hour:00` in the device's local time

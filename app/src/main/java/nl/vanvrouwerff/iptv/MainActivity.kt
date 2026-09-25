@@ -17,6 +17,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -30,10 +32,13 @@ import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
 import nl.vanvrouwerff.iptv.data.settings.SourceConfig
 import nl.vanvrouwerff.iptv.player.PlayerActivity
+import nl.vanvrouwerff.iptv.ui.categories.CategoriesScreen
+import nl.vanvrouwerff.iptv.ui.guide.GuideScreen
 import nl.vanvrouwerff.iptv.ui.channels.ChannelsScreen
 import nl.vanvrouwerff.iptv.ui.detail.MovieDetailScreen
 import nl.vanvrouwerff.iptv.ui.seriesdetail.Episode
 import nl.vanvrouwerff.iptv.ui.seriesdetail.SeriesDetailScreen
+import nl.vanvrouwerff.iptv.ui.seriesdetail.SeriesRef
 import nl.vanvrouwerff.iptv.ui.seriesdetail.SeriesSeason
 import nl.vanvrouwerff.iptv.ui.profilepicker.ProfilePickerScreen
 import nl.vanvrouwerff.iptv.ui.profiles.ProfilesScreen
@@ -50,7 +55,7 @@ class MainActivity : ComponentActivity() {
             IptvTheme {
                 AppRoot(
                     onPlay = { channel, list, resumeMs -> openPlayer(channel, list, resumeMs) },
-                    onPlayEpisode = { ep, season, resumeMs -> openPlayerForEpisode(ep, season, resumeMs) },
+                    onPlayEpisode = { ep, season, series, resumeMs -> openPlayerForEpisode(ep, season, series, resumeMs) },
                     onPlayDirect = ::onPlayDirect,
                 )
             }
@@ -85,15 +90,27 @@ class MainActivity : ComponentActivity() {
     private fun openPlayer(channel: Channel, all: List<Channel>, resumeMs: Long) {
         val intent = Intent(this, PlayerActivity::class.java).apply {
             putExtra(PlayerActivity.EXTRA_CHANNEL_ID, channel.id)
-            putExtra(PlayerActivity.EXTRA_CHANNEL_IDS, all.map { it.id }.toTypedArray())
+            // Tens of thousands of ids blow the 1 MB binder limit; let the player query instead.
+            if (all.size > PlayerActivity.MAX_INTENT_IDS) {
+                putExtra(PlayerActivity.EXTRA_SCOPE_TYPE, channel.type.name)
+            } else {
+                putExtra(PlayerActivity.EXTRA_CHANNEL_IDS, all.map { it.id }.toTypedArray())
+            }
             if (resumeMs > 0L) putExtra(PlayerActivity.EXTRA_RESUME_POSITION_MS, resumeMs)
         }
         startActivity(intent)
     }
 
-    private fun openPlayerForEpisode(episode: Episode, season: SeriesSeason, resumeMs: Long) {
+    private fun openPlayerForEpisode(episode: Episode, season: SeriesSeason, series: SeriesRef, resumeMs: Long) {
         val orderedEpisodes = season.episodes
         val intent = Intent(this, PlayerActivity::class.java).apply {
+            putExtra(PlayerActivity.EXTRA_SERIES_CHANNEL_ID, series.channelId)
+            putExtra(PlayerActivity.EXTRA_SERIES_NAME, series.name)
+            putExtra(PlayerActivity.EXTRA_SERIES_COVER, series.cover)
+            putExtra(PlayerActivity.EXTRA_SERIES_SEASON, season.number)
+            putExtra(PlayerActivity.EXTRA_SERIES_EPISODE_NUMBERS, orderedEpisodes.map { it.episodeNumber }.toIntArray())
+            putExtra(PlayerActivity.EXTRA_SERIES_EPISODE_COVERS, orderedEpisodes.map { it.coverUrl.orEmpty() }.toTypedArray())
+            putExtra(PlayerActivity.EXTRA_SERIES_EPISODE_DURATIONS, orderedEpisodes.map { it.durationSecs }.toLongArray())
             putExtra(PlayerActivity.EXTRA_CHANNEL_ID, episode.id)
             putExtra(PlayerActivity.EXTRA_ADHOC_IDS, orderedEpisodes.map { it.id }.toTypedArray())
             putExtra(PlayerActivity.EXTRA_ADHOC_URLS, orderedEpisodes.map { it.streamUrl }.toTypedArray())
@@ -142,8 +159,10 @@ private sealed interface Route {
     data object Settings : Route
     data object Profiles : Route
     data object ProfilePicker : Route
-    data class MovieDetail(val channelId: String) : Route
-    data class SeriesDetail(val seriesId: String) : Route
+    data class MovieDetail(val channelId: String, val preview: Channel? = null) : Route
+    data class SeriesDetail(val seriesId: String, val preview: Channel? = null) : Route
+    data class Categories(val type: ContentType, val category: String?) : Route
+    data object Guide : Route
 }
 
 /** Skip the cold-start profile picker if the user picked a profile within this window. */
@@ -152,7 +171,7 @@ private const val PROFILE_SESSION_WINDOW_MS: Long = 8L * 3600 * 1000
 @Composable
 private fun AppRoot(
     onPlay: (Channel, List<Channel>, Long) -> Unit,
-    onPlayEpisode: (Episode, SeriesSeason, Long) -> Unit,
+    onPlayEpisode: (Episode, SeriesSeason, SeriesRef, Long) -> Unit,
     onPlayDirect: (Channel) -> Unit,
 ) {
     val app = IptvApp.get()
@@ -191,7 +210,10 @@ private fun AppRoot(
 
     val showSplash = !resolved || !minSplashElapsed || (source != null && profilePickerNeeded == null)
 
-    var routeOverride by remember { mutableStateOf<Route?>(null) }
+    // Simple back stack on top of the computed root route (Welcome / ProfilePicker /
+    // Channels), so BACK from a related title returns to the previous detail screen.
+    val backStack = remember { mutableStateListOf<Route>() }
+    var pickerDismissed by remember { mutableStateOf(false) }
 
     // Single active route — detail screens REPLACE the ChannelsScreen in the composition
     // tree rather than overlaying on top of it. Overlaying kept ChannelsScreen focusable
@@ -199,10 +221,10 @@ private fun AppRoot(
     // series/movie cards beneath, randomly opening another detail view. ChannelsViewModel
     // is activity-scoped so its per-type cache survives this swap; only LazyListState
     // (scroll position) resets on back, which is a fair trade for correctness.
-    val route: Route = routeOverride
+    val route: Route = backStack.lastOrNull()
         ?: when {
             source == null -> Route.Welcome
-            profilePickerNeeded == true -> Route.ProfilePicker
+            profilePickerNeeded == true && !pickerDismissed -> Route.ProfilePicker
             else -> Route.Channels
         }
 
@@ -220,8 +242,15 @@ private fun AppRoot(
         } else {
             AppRouteHost(
                 route = route,
-                source = source,
-                onRouteChange = { routeOverride = it },
+                onNavigate = { next ->
+                    if (next == Route.Channels) {
+                        pickerDismissed = true
+                        backStack.clear()
+                    } else {
+                        backStack.add(next)
+                    }
+                },
+                onBack = { if (backStack.isNotEmpty()) backStack.removeAt(backStack.lastIndex) },
                 onPlay = onPlay,
                 onPlayEpisode = onPlayEpisode,
                 onPlayDirect = onPlayDirect,
@@ -238,36 +267,41 @@ private const val MIN_SPLASH_DURATION_MS: Long = 180L
 @Composable
 private fun AppRouteHost(
     route: Route,
-    source: SourceConfig?,
-    onRouteChange: (Route?) -> Unit,
+    onNavigate: (Route) -> Unit,
+    onBack: () -> Unit,
     onPlay: (Channel, List<Channel>, Long) -> Unit,
-    onPlayEpisode: (Episode, SeriesSeason, Long) -> Unit,
+    onPlayEpisode: (Episode, SeriesSeason, SeriesRef, Long) -> Unit,
     onPlayDirect: (Channel) -> Unit,
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    // Keyed on the route so two consecutive screens of the same kind (film → related film)
+    // don't share remembered state such as the initial focus request.
+    Box(modifier = Modifier.fillMaxSize()) { key(route) {
         when (route) {
-            Route.Welcome -> WelcomeScreen(onConfigure = { onRouteChange(Route.Settings) })
+            Route.Welcome -> WelcomeScreen(onConfigure = { onNavigate(Route.Settings) })
             Route.Settings -> SettingsScreen(
-                onSaved = { onRouteChange(Route.Channels) },
-                onBack = { onRouteChange(if (source == null) Route.Welcome else Route.Channels) },
-                onOpenProfiles = { onRouteChange(Route.Profiles) },
+                onSaved = { onNavigate(Route.Channels) },
+                onBack = onBack,
+                onOpenProfiles = { onNavigate(Route.Profiles) },
             )
             Route.Profiles -> ProfilesScreen(
-                onBack = { onRouteChange(Route.Channels) },
-                onPicked = { onRouteChange(Route.Channels) },
+                onBack = onBack,
+                onPicked = { onNavigate(Route.Channels) },
             )
             Route.ProfilePicker -> ProfilePickerScreen(
-                onPicked = { onRouteChange(Route.Channels) },
+                onPicked = { onNavigate(Route.Channels) },
+                onManageProfiles = { onNavigate(Route.Profiles) },
             )
             Route.Channels -> ChannelsScreen(
-                onOpenSettings = { onRouteChange(Route.Settings) },
-                onOpenProfiles = { onRouteChange(Route.Profiles) },
+                onOpenSettings = { onNavigate(Route.Settings) },
+                onOpenCategories = { type, category -> onNavigate(Route.Categories(type, category)) },
+                onOpenGuide = { onNavigate(Route.Guide) },
+                onOpenProfiles = { onNavigate(Route.Profiles) },
                 onPlay = { channel, list ->
                     when (channel.type) {
-                        ContentType.MOVIE -> onRouteChange(Route.MovieDetail(channel.id))
+                        ContentType.MOVIE -> onNavigate(Route.MovieDetail(channel.id, channel))
                         ContentType.SERIES -> {
                             val raw = channel.id.removePrefix("xt-series:")
-                            onRouteChange(Route.SeriesDetail(raw))
+                            onNavigate(Route.SeriesDetail(raw, channel))
                         }
                         ContentType.TV -> onPlay(channel, list, 0L)
                     }
@@ -275,10 +309,10 @@ private fun AppRouteHost(
                 onPlayDirect = onPlayDirect,
                 onOpenDetail = { channel ->
                     when (channel.type) {
-                        ContentType.MOVIE -> onRouteChange(Route.MovieDetail(channel.id))
+                        ContentType.MOVIE -> onNavigate(Route.MovieDetail(channel.id, channel))
                         ContentType.SERIES -> {
                             val raw = channel.id.removePrefix("xt-series:")
-                            onRouteChange(Route.SeriesDetail(raw))
+                            onNavigate(Route.SeriesDetail(raw, channel))
                         }
                         ContentType.TV -> Unit
                     }
@@ -286,22 +320,41 @@ private fun AppRouteHost(
             )
             is Route.MovieDetail -> MovieDetailScreen(
                 channelId = route.channelId,
-                onBack = { onRouteChange(Route.Channels) },
+                preview = route.preview,
+                onBack = onBack,
                 onPlay = { channel, resumeMs -> onPlay(channel, listOf(channel), resumeMs) },
                 onPickRelated = { channel ->
                     when (channel.type) {
-                        ContentType.MOVIE -> onRouteChange(Route.MovieDetail(channel.id))
+                        ContentType.MOVIE -> onNavigate(Route.MovieDetail(channel.id, channel))
                         ContentType.SERIES ->
-                            onRouteChange(Route.SeriesDetail(channel.id.removePrefix("xt-series:")))
+                            onNavigate(Route.SeriesDetail(channel.id.removePrefix("xt-series:"), channel))
                         ContentType.TV -> Unit // no-op: TV isn't shown in VOD related rails
+                    }
+                },
+            )
+            Route.Guide -> GuideScreen(
+                onBack = onBack,
+                onPlay = { channel, list -> onPlay(channel, list, 0L) },
+            )
+            is Route.Categories -> CategoriesScreen(
+                type = route.type,
+                initialCategory = route.category,
+                onBack = onBack,
+                onOpen = { channel, list ->
+                    when (channel.type) {
+                        ContentType.MOVIE -> onNavigate(Route.MovieDetail(channel.id, channel))
+                        ContentType.SERIES ->
+                            onNavigate(Route.SeriesDetail(channel.id.removePrefix("xt-series:"), channel))
+                        ContentType.TV -> onPlay(channel, list, 0L)
                     }
                 },
             )
             is Route.SeriesDetail -> SeriesDetailScreen(
                 seriesId = route.seriesId,
-                onBack = { onRouteChange(Route.Channels) },
+                preview = route.preview,
+                onBack = onBack,
                 onPlayEpisode = onPlayEpisode,
             )
         }
-    }
+    } }
 }

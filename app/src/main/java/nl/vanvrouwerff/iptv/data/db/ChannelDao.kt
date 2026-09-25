@@ -21,18 +21,50 @@ interface ChannelDao {
 
     @Query(
         "SELECT * FROM channels WHERE type = :type AND name LIKE '%' || :query || '%' " +
-            "COLLATE NOCASE ORDER BY sortIndex ASC LIMIT :limit",
+            "ESCAPE '\\' COLLATE NOCASE ORDER BY sortIndex ASC LIMIT :limit",
     )
     fun searchChannels(type: String, query: String, limit: Int): Flow<List<ChannelEntity>>
 
     @Query("SELECT * FROM channels ORDER BY sortIndex ASC")
     suspend fun allChannels(): List<ChannelEntity>
 
+    /** Lightweight projection for the in-memory, accent-insensitive search index. */
+    @Query("SELECT id, name, type FROM channels ORDER BY sortIndex ASC")
+    suspend fun searchIndexRows(): List<SearchIndexRow>
+
+    @Query("SELECT * FROM channels WHERE id IN (:ids)")
+    suspend fun getChannelsByIds(ids: List<String>): List<ChannelEntity>
+
+    @Query("SELECT * FROM channels WHERE type = :type AND streamUrl IS NOT NULL ORDER BY sortIndex ASC")
+    suspend fun playableByType(type: String): List<ChannelEntity>
+
+    @Query(
+        "SELECT * FROM channels WHERE type = :type AND groupTitle = :groupTitle " +
+            "AND streamUrl IS NOT NULL ORDER BY sortIndex ASC",
+    )
+    suspend fun playableByGroup(type: String, groupTitle: String): List<ChannelEntity>
+
+    @Query("SELECT * FROM channels WHERE groupTitle IS NULL AND type = :type AND streamUrl IS NOT NULL ORDER BY sortIndex ASC")
+    suspend fun playableUncategorized(type: String): List<ChannelEntity>
+
     @Query("SELECT * FROM channels WHERE type = :type ORDER BY sortIndex ASC")
     suspend fun getChannelsByType(type: String): List<ChannelEntity>
 
     @Query("SELECT * FROM categories ORDER BY sortIndex ASC")
     fun observeCategories(): Flow<List<CategoryEntity>>
+
+    /** Every group title present for a type, in catalogue order. NULL = uncategorised. */
+    @Query(
+        "SELECT groupTitle FROM channels WHERE type = :type " +
+            "GROUP BY groupTitle ORDER BY MIN(sortIndex) ASC",
+    )
+    fun observeGroupTitlesByType(type: String): Flow<List<String?>>
+
+    @Query("SELECT * FROM channels WHERE type = :type AND groupTitle = :groupTitle ORDER BY sortIndex ASC")
+    fun observeByTypeAndGroup(type: String, groupTitle: String): Flow<List<ChannelEntity>>
+
+    @Query("SELECT * FROM channels WHERE type = :type AND groupTitle IS NULL ORDER BY sortIndex ASC")
+    fun observeByTypeUncategorized(type: String): Flow<List<ChannelEntity>>
 
     @Query("SELECT * FROM categories WHERE type = :type ORDER BY sortIndex ASC")
     fun observeCategoriesByType(type: String): Flow<List<CategoryEntity>>
@@ -57,24 +89,29 @@ interface ChannelDao {
      * [limit] rows. Drives the "Nieuw in je catalogus" rail on the home screen.
      */
     @Query(
-        "SELECT * FROM channels WHERE addedAt > :cutoff AND streamUrl IS NOT NULL " +
-            "AND type IN ('MOVIE','SERIES') " +
+        "SELECT * FROM channels WHERE addedAt > :cutoff AND type = :type " +
+            "AND (streamUrl IS NOT NULL OR type = 'SERIES') " +
             "ORDER BY addedAt DESC LIMIT :limit",
     )
-    fun observeRecentlyAdded(cutoff: Long, limit: Int = 30): Flow<List<ChannelEntity>>
+    fun observeRecentlyAdded(type: String, cutoff: Long, limit: Int = 30): Flow<List<ChannelEntity>>
 
     @Transaction
     suspend fun replaceAll(channels: List<ChannelEntity>, categories: List<CategoryEntity>) {
         // Preserve addedAt across refreshes: a channel that already existed keeps its
         // original timestamp, only genuinely-new IDs get a fresh `now`. Without this the
         // "Nieuw in je catalogus" rail would re-flood with every catalogue refresh.
+        // On the very first import nothing is "new" — stamp 0 so the rail stays empty
+        // instead of listing an arbitrary slice of the whole catalogue.
         val now = System.currentTimeMillis()
         val existing = getAddedAtSnapshot().associate { it.id to it.addedAt }
+        val firstImport = existing.isEmpty()
         val merged = channels.map { ch ->
             val previous = existing[ch.id]
-            if (previous != null && previous > 0L) ch.copy(addedAt = previous)
-            else if (ch.addedAt == 0L) ch.copy(addedAt = now)
-            else ch
+            when {
+                previous != null -> ch.copy(addedAt = previous)
+                firstImport -> ch.copy(addedAt = 0L)
+                else -> ch.copy(addedAt = now)
+            }
         }
         clearChannels()
         clearCategories()
@@ -87,12 +124,31 @@ interface ChannelDao {
         merged.chunked(1000).forEach { insertChannels(it) }
     }
 
-    @Query("SELECT channelId FROM favorites WHERE profileId = :profileId")
+    /** Favourite ids in the user's chosen order. */
+    @Query("SELECT channelId FROM favorites WHERE profileId = :profileId ORDER BY position ASC, addedAt ASC")
     fun observeFavoriteIds(profileId: String): Flow<List<String>>
 
+    @Query("SELECT * FROM favorites WHERE profileId = :profileId ORDER BY position ASC, addedAt ASC")
+    suspend fun favoritesOrdered(profileId: String): List<FavoriteEntity>
+
+    @Query("UPDATE favorites SET position = :position WHERE profileId = :profileId AND channelId = :id")
+    suspend fun setFavoritePosition(profileId: String, id: String, position: Long)
+
+    /** Swap a favourite with its neighbour (delta -1 = up, +1 = down). */
+    @androidx.room.Transaction
+    suspend fun moveFavorite(profileId: String, id: String, delta: Int) {
+        val list = favoritesOrdered(profileId)
+        val from = list.indexOfFirst { it.channelId == id }
+        val to = from + delta
+        if (from < 0 || to !in list.indices) return
+        // Re-number densely first so equal/legacy positions can't make a swap a no-op.
+        val reordered = list.toMutableList().apply { add(to, removeAt(from)) }
+        reordered.forEachIndexed { i, fav -> setFavoritePosition(profileId, fav.channelId, i.toLong()) }
+    }
+
     @Query(
-        "INSERT OR IGNORE INTO favorites (profileId, channelId, addedAt) " +
-            "VALUES (:profileId, :id, :now)",
+        "INSERT OR IGNORE INTO favorites (profileId, channelId, addedAt, position) " +
+            "VALUES (:profileId, :id, :now, :now)",
     )
     suspend fun addFavorite(
         profileId: String,
@@ -124,10 +180,10 @@ interface ChannelDao {
     @Query(
         "SELECT c.* FROM channels c " +
             "JOIN watchlist w ON c.id = w.channelId " +
-            "WHERE w.profileId = :profileId " +
+            "WHERE w.profileId = :profileId AND c.type = :type " +
             "ORDER BY w.addedAt DESC LIMIT 30",
     )
-    fun observeWatchlistChannels(profileId: String): Flow<List<ChannelEntity>>
+    fun observeWatchlistChannels(profileId: String, type: String): Flow<List<ChannelEntity>>
 
     @Query("SELECT * FROM channels WHERE id = :id LIMIT 1")
     suspend fun getChannelById(id: String): ChannelEntity?
@@ -155,6 +211,10 @@ interface ChannelDao {
      * Progress rows for a specific set of channel / episode IDs. Used by the series detail
      * screen to compute per-season "X of Y bekeken" badges without polling every episode
      * row individually.
+     */
+    /**
+     * Progress rows for a specific set of channel / episode IDs. Callers must keep `ids`
+     * below SQLite's 999-variable limit (Android 10) — chunk larger sets.
      */
     @Query(
         "SELECT * FROM watch_progress WHERE profileId = :profileId AND channelId IN (:ids)",
@@ -267,6 +327,19 @@ interface ChannelDao {
     )
     suspend fun getNextProgrammeFor(key: String, now: Long): ProgrammeEntity?
 
+    @Query(
+        "SELECT * FROM programmes " +
+            "WHERE channelKey IN (:keys) AND startMs <= :now AND stopMs > :now",
+    )
+    suspend fun nowPlayingForKeys(keys: List<String>, now: Long): List<ProgrammeEntity>
+
+    @Query(
+        "SELECT * FROM programmes " +
+            "WHERE channelKey IN (:keys) AND stopMs > :from AND startMs < :to " +
+            "ORDER BY channelKey, startMs ASC",
+    )
+    suspend fun programmesForKeys(keys: List<String>, from: Long, to: Long): List<ProgrammeEntity>
+
     // Series info cache.
 
     @Query("SELECT * FROM series_info_cache WHERE seriesId = :seriesId LIMIT 1")
@@ -283,3 +356,9 @@ interface ChannelDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putTmdbPopularCache(entry: TmdbPopularCacheEntity)
 }
+
+data class SearchIndexRow(
+    val id: String,
+    val name: String,
+    val type: String,
+)

@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
@@ -47,6 +48,8 @@ data class Rail(
 data class ChannelsUiState(
     val loading: Boolean = true,
     val refreshing: Boolean = false,
+    /** Stage/count of a running import, shown on the first-run loading screen. */
+    val importProgress: nl.vanvrouwerff.iptv.data.repo.ImportProgress? = null,
     val selectedType: ContentType = ContentType.TV,
     /** Channels for the currently selected tab only. Keeps peak memory bounded. */
     val channels: List<Channel> = emptyList(),
@@ -94,10 +97,10 @@ data class ChannelsUiState(
     val popularMovies: List<Channel> = emptyList(),
     /** "Nieuw in je catalogus" — items added in the past 14 days (Phase 6). */
     val recentlyAdded: List<Channel> = emptyList(),
-    /** "Bewaar voor later" — profile-scoped watchlist (Phase 7). */
-    val watchlist: List<Channel> = emptyList(),
     val managingFavorites: Boolean = false,
     val recentSearches: List<String> = emptyList(),
+    /** Hero trailers autoplay (Instellingen → Weergave). */
+    val trailersAutoplay: Boolean = true,
     val error: String? = null,
     /**
      * Channels with `streamUrl != null`, derived once per channels-update so click handlers
@@ -117,6 +120,8 @@ data class ChannelsUiState(
     val rails: List<Rail> = emptyList(),
     /** Display name of the currently active profile, or null while we're still resolving it. */
     val activeProfileName: String? = null,
+    val activeProfileColorArgb: Int? = null,
+    val activeProfileEmoji: String? = null,
 ) {
     val isSearching: Boolean get() = searchQuery.isNotBlank()
 
@@ -145,7 +150,7 @@ private object ChannelsDerivations {
         favoriteIds: Set<String>,
     ): List<Channel> =
         if (selectedType != ContentType.TV || favoriteIds.isEmpty()) emptyList()
-        else channels.filter { it.id in favoriteIds }
+        else inFavoriteOrder(channels, favoriteIds)
 
     fun hero(
         selectedType: ContentType,
@@ -250,7 +255,7 @@ private object ChannelsDerivations {
             // shortcut to the user's starred channels, without hiding the rest of the
             // catalogue behind a manage-mode wall.
             if (favoriteIds.isNotEmpty()) {
-                val favs = channels.filter { it.id in favoriteIds }
+                val favs = inFavoriteOrder(channels, favoriteIds)
                 if (favs.isNotEmpty()) {
                     add(Rail(ChannelsUiState.MY_LIST, favs.take(ChannelsUiState.MAX_PER_RAIL)))
                 }
@@ -264,9 +269,17 @@ private object ChannelsDerivations {
                 }
             }.map { (title, chs) -> Rail(title, chs.take(ChannelsUiState.MAX_PER_RAIL)) }
             addAll(categoryRails.take(ChannelsUiState.MAX_RAILS - size))
-        }
+        }.distinctBy { it.title }
     }
 }
+
+data class RailFocusMemory(
+    val railKey: String,
+    val itemId: String,
+    val itemIndex: Int,
+    val listIndex: Int,
+    val listOffset: Int,
+)
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
 class ChannelsViewModel : ViewModel() {
@@ -283,6 +296,65 @@ class ChannelsViewModel : ViewModel() {
     // changes during a scroll don't churn the main UI state.
     private val _hoverChannel = MutableStateFlow<Channel?>(null)
     val hoverChannel: StateFlow<Channel?> = _hoverChannel.asStateFlow()
+
+    /**
+     * Debounced hover for the hero backdrop swap: fast D-pad scrolling passes over many
+     * cards, and only the one the user settles on should repaint the hero.
+     */
+    val settledHoverChannel: StateFlow<Channel?> = _hoverChannel
+        .debounce(HOVER_SETTLE_MS)
+        .distinctUntilChanged()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    // Last focused rail card per tab, so returning from a detail screen (which disposes the
+    // ChannelsScreen composition) lands the user where they left off. Plain map: it's only
+    // read once when the rails view is recreated, so it doesn't need to be observable.
+    private val focusMemories = mutableMapOf<ContentType, RailFocusMemory>()
+
+    fun focusMemoryFor(type: ContentType): RailFocusMemory? = focusMemories[type]
+
+    private class SearchIndex(
+        val ids: Array<String>,
+        val names: Array<String>,
+        val types: Array<String>,
+    )
+
+    private val searchIndexFlow: StateFlow<SearchIndex?> = dao.observeChannelCount()
+        .distinctUntilChanged()
+        .debounce(500)
+        .map {
+            val rows = dao.searchIndexRows()
+            SearchIndex(
+                ids = Array(rows.size) { i -> rows[i].id },
+                names = Array(rows.size) { i -> normalizeForSearch(rows[i].name) },
+                types = Array(rows.size) { i -> rows[i].type },
+            )
+        }
+        .flowOn(Dispatchers.IO)
+        .stateIn(viewModelScope, SharingStarted.Lazily, null)
+
+    private suspend fun runSearch(index: SearchIndex, query: String): List<Channel> {
+        val needle = normalizeForSearch(query)
+        if (needle.isEmpty()) return emptyList()
+        val perType = HashMap<String, Int>()
+        val hits = ArrayList<String>()
+        for (i in index.ids.indices) {
+            if (!index.names[i].contains(needle)) continue
+            val count = perType[index.types[i]] ?: 0
+            if (count >= SEARCH_LIMIT_PER_TYPE) continue
+            perType[index.types[i]] = count + 1
+            hits += index.ids[i]
+        }
+        if (hits.isEmpty()) return emptyList()
+        val byId = hits.chunked(500)
+            .flatMap { dao.getChannelsByIds(it) }
+            .associateBy { it.id }
+        return hits.mapNotNull { byId[it]?.toDomain() }
+    }
+
+    fun rememberFocus(type: ContentType, memory: RailFocusMemory?) {
+        if (memory == null) focusMemories.remove(type) else focusMemories[type] = memory
+    }
 
     fun onHoverChannel(channel: Channel?) {
         _hoverChannel.value = channel
@@ -314,6 +386,10 @@ class ChannelsViewModel : ViewModel() {
         }
 
     init {
+        app.settings.trailersAutoplay
+            .onEach { on -> _state.update { it.copy(trailersAutoplay = on) } }
+            .launchIn(viewModelScope)
+
         // Emit the cached slice for the selected tab. Because each `channelsByType` entry is
         // a warm StateFlow, switching tabs re-emits the already-computed list synchronously —
         // the expensive Room query + entity mapping only runs once per type, in the background.
@@ -332,30 +408,21 @@ class ChannelsViewModel : ViewModel() {
         // "Nieuw in je catalogus": observe channels added in the last 14 days. Window is
         // computed once at subscription — fine since the rail is informative, not strict.
         val cutoff = System.currentTimeMillis() - RECENTLY_ADDED_WINDOW_MS
-        dao.observeRecentlyAdded(cutoff = cutoff, limit = 30)
+        selectedTypeFlow
+            .flatMapLatest { type -> dao.observeRecentlyAdded(type = type.name, cutoff = cutoff, limit = 30) }
             .map { rows -> rows.map { it.toDomain() } }
             .flowOn(Dispatchers.Default)
             .onEach { items -> _state.update { it.copy(recentlyAdded = items) } }
             .launchIn(viewModelScope)
 
-        // "Bewaar voor later" watchlist — profile-scoped, re-subscribes on profile switch.
-        activeProfileIdFlow
-            .flatMapLatest { profileId -> dao.observeWatchlistChannels(profileId) }
-            .map { rows -> rows.map { it.toDomain() } }
-            .flowOn(Dispatchers.Default)
-            .onEach { items -> _state.update { it.copy(watchlist = items) } }
-            .launchIn(viewModelScope)
-
-        // Search results for the current tab, debounced so we don't hit Room on every keystroke.
-        combine(
-            searchQueryFlow.debounce(200),
-            selectedTypeFlow,
-        ) { q, type -> q to type }
+        // Global search over every type, accent-insensitive. The index is built lazily on the
+        // first non-blank query and rebuilt when the catalogue size changes.
+        searchQueryFlow.debounce(200)
+            .map { it.trim() }
             .distinctUntilChanged()
-            .flatMapLatest { (q, type) ->
+            .flatMapLatest { q ->
                 if (q.isBlank()) flowOf(emptyList())
-                else dao.searchChannels(type.name, q.trim(), limit = SEARCH_LIMIT)
-                    .map { rows -> rows.map { it.toDomain() } }
+                else searchIndexFlow.filterNotNull().map { index -> runSearch(index, q) }
             }
             .flowOn(Dispatchers.Default)
             .onEach { results -> _state.update { it.copy(searchResults = results) } }
@@ -365,7 +432,8 @@ class ChannelsViewModel : ViewModel() {
         // the active profile id changes so switching profiles swaps these lists atomically.
         activeProfileIdFlow
             .flatMapLatest { dao.observeFavoriteIds(it) }
-            .map { it.toHashSet() }
+            // Insertion-ordered so the favourites rail follows the user's own order.
+            .map { LinkedHashSet(it) }
             .onEach { ids -> _state.update { it.copy(favoriteIds = ids) } }
             .launchIn(viewModelScope)
 
@@ -382,13 +450,33 @@ class ChannelsViewModel : ViewModel() {
         // Active-profile name for the TopBar chip. Looks up the name by id so the chip
         // always reflects the current row in the profiles table, even after a rename.
         combine(activeProfileIdFlow, profileDao.observeProfiles()) { id, profiles ->
-            profiles.firstOrNull { it.id == id }?.name
+            profiles.firstOrNull { it.id == id }
         }
-            .onEach { name -> _state.update { it.copy(activeProfileName = name) } }
+            .onEach { p ->
+                _state.update {
+                    it.copy(
+                        activeProfileName = p?.name,
+                        activeProfileColorArgb = p?.colorArgb,
+                        activeProfileEmoji = p?.avatarEmoji,
+                    )
+                }
+            }
             .launchIn(viewModelScope)
 
         app.settings.lastRefreshSuccessAt
             .onEach { ts -> _state.update { it.copy(lastRefreshAtMs = ts) } }
+            .launchIn(viewModelScope)
+
+        // Refresh status is owned by the shared use case, so a refresh started from the
+        // settings screen or the nightly worker shows up here too.
+        app.refreshUseCase.refreshing
+            .onEach { r -> _state.update { it.copy(refreshing = r) } }
+            .launchIn(viewModelScope)
+        app.refreshUseCase.lastError
+            .onEach { e -> _state.update { it.copy(error = e) } }
+            .launchIn(viewModelScope)
+        app.refreshUseCase.progress
+            .onEach { p -> _state.update { it.copy(importProgress = p) } }
             .launchIn(viewModelScope)
 
         // EPG "now playing" per channel. We tick the clock every minute so the list stays
@@ -593,6 +681,33 @@ class ChannelsViewModel : ViewModel() {
         _state.update { it.copy(managingFavorites = enabled) }
     }
 
+    fun removeFromContinueWatching(channelId: String) {
+        val profileId = activeProfileIdFlow.value
+        viewModelScope.launch { dao.clearProgress(profileId, channelId) }
+    }
+
+    fun markWatched(channelId: String) {
+        val profileId = activeProfileIdFlow.value
+        viewModelScope.launch {
+            val existing = dao.getProgress(profileId, channelId)
+            val duration = existing?.durationMs?.takeIf { it > 0 } ?: 1L
+            dao.saveProgress(
+                nl.vanvrouwerff.iptv.data.db.WatchProgressEntity(
+                    profileId = profileId,
+                    channelId = channelId,
+                    positionMs = duration,
+                    durationMs = duration,
+                    updatedAt = System.currentTimeMillis(),
+                ),
+            )
+        }
+    }
+
+    fun moveFavorite(channelId: String, delta: Int) {
+        val profileId = activeProfileIdFlow.value
+        viewModelScope.launch { dao.moveFavorite(profileId, channelId, delta) }
+    }
+
     fun toggleFavorite(channelId: String) {
         val isFav = channelId in _state.value.favoriteIds
         val profileId = activeProfileIdFlow.value
@@ -604,23 +719,8 @@ class ChannelsViewModel : ViewModel() {
 
     fun refresh() {
         if (_state.value.refreshing) return
-        viewModelScope.launch {
-            _state.update { it.copy(refreshing = true, error = null) }
-            // The use case fires onCatalogueReady once channels + categories land, before it
-            // starts the EPG write. We flip `refreshing = false` then so the user sees their
-            // rails while the EPG persists in the background (~2 extra minutes on the Formuler).
-            val result = app.refreshUseCase(
-                onCatalogueReady = {
-                    _state.update { it.copy(refreshing = false) }
-                },
-            )
-            _state.update {
-                it.copy(
-                    refreshing = false,
-                    error = result.exceptionOrNull()?.message,
-                )
-            }
-        }
+        // App scope: the refresh (and its EPG write) must survive leaving this screen.
+        app.appScope.launch { app.refreshUseCase() }
     }
 
     /**
@@ -681,7 +781,8 @@ class ChannelsViewModel : ViewModel() {
     }
 
     private companion object {
-        const val SEARCH_LIMIT = 200
+        const val SEARCH_LIMIT_PER_TYPE = 60
+        const val HOVER_SETTLE_MS = 350L
         const val CONTINUE_LIMIT = 20
         const val CONTINUE_FINISH_THRESHOLD_MS = 30_000L
         // One EPG tick per minute keeps the "Now on" labels live without hammering Room.
@@ -724,3 +825,17 @@ private data class DerivedFields(
     val heroes: List<Channel>,
     val rails: List<Rail>,
 )
+
+internal fun normalizeForSearch(text: String): String =
+    java.text.Normalizer.normalize(text, java.text.Normalizer.Form.NFD)
+        .replace(COMBINING_MARKS, "")
+        .lowercase()
+        .trim()
+
+private val COMBINING_MARKS = Regex("\\p{M}+")
+
+/** Channels that are favourites, in the order of [favoriteIds] (the user's own order). */
+internal fun inFavoriteOrder(channels: List<Channel>, favoriteIds: Set<String>): List<Channel> {
+    val byId = channels.associateBy { it.id }
+    return favoriteIds.mapNotNull { byId[it] }
+}

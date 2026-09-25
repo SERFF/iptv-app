@@ -17,7 +17,7 @@ import java.util.TimeZone
  */
 object XmltvParser {
 
-    fun parse(input: InputStream): List<ProgrammeEntity> {
+    fun parse(input: InputStream, keepChannel: (String) -> Boolean = { true }): List<ProgrammeEntity> {
         val programmes = mutableListOf<ProgrammeEntity>()
         val parser = Xml.newPullParser()
         parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
@@ -26,7 +26,12 @@ object XmltvParser {
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
             if (event == XmlPullParser.START_TAG && parser.name == "programme") {
-                readProgramme(parser)?.let(programmes::add)
+                val channel = parser.getAttributeValue(null, "channel")
+                if (channel != null && keepChannel(channel)) {
+                    readProgramme(parser)?.let(programmes::add)
+                } else {
+                    skipElement(parser)
+                }
             } else {
                 // Fast-skip: don't descend into <channel> etc, we only need <programme>.
                 event = parser.next()
@@ -55,8 +60,8 @@ object XmltvParser {
                 XmlPullParser.START_TAG -> {
                     depth++
                     when (parser.name) {
-                        "title" -> title = readText(parser).also { depth-- }
-                        "desc" -> description = readText(parser).also { depth-- }
+                        "title" -> readText(parser).also { depth-- }.let { if (title.isNullOrBlank()) title = it }
+                        "desc" -> readText(parser).also { depth-- }.let { if (description.isNullOrBlank()) description = it }
                         else -> skipElement(parser).also { depth-- }
                     }
                 }
@@ -77,13 +82,16 @@ object XmltvParser {
 
     private fun readText(parser: XmlPullParser): String {
         val sb = StringBuilder()
-        while (true) {
-            val ev = parser.next()
-            when (ev) {
-                XmlPullParser.TEXT -> sb.append(parser.text ?: "")
-                XmlPullParser.END_TAG, XmlPullParser.END_DOCUMENT -> return sb.toString().trim()
+        var depth = 1
+        while (depth > 0) {
+            when (parser.next()) {
+                XmlPullParser.TEXT -> if (depth == 1) sb.append(parser.text ?: "")
+                XmlPullParser.START_TAG -> depth++
+                XmlPullParser.END_TAG -> depth--
+                XmlPullParser.END_DOCUMENT -> depth = 0
             }
         }
+        return sb.toString().trim()
     }
 
     private fun skipElement(parser: XmlPullParser) {
@@ -98,20 +106,21 @@ object XmltvParser {
     }
 
     /**
-     * Accepts "YYYYMMDDhhmmss" (UTC) or "YYYYMMDDhhmmss +0200" (with tz offset). Returns
-     * epoch millis, or null if unparseable.
+     * Accepts "YYYYMMDDhhmm[ss]" (UTC) optionally followed by a "+0200"-style offset.
+     * Returns epoch millis, or null if unparseable.
      */
-    private fun parseXmltvTime(raw: String): Long? {
+    internal fun parseXmltvTime(raw: String): Long? {
         val trimmed = raw.trim()
-        if (trimmed.length < 14) return null
+        val digits = trimmed.takeWhile { it.isDigit() }.length
+        if (digits < 12) return null
         val year = trimmed.substring(0, 4).toIntOrNull() ?: return null
         val month = trimmed.substring(4, 6).toIntOrNull() ?: return null
         val day = trimmed.substring(6, 8).toIntOrNull() ?: return null
         val hour = trimmed.substring(8, 10).toIntOrNull() ?: return null
         val minute = trimmed.substring(10, 12).toIntOrNull() ?: return null
-        val second = trimmed.substring(12, 14).toIntOrNull() ?: return null
+        val second = if (digits >= 14) trimmed.substring(12, 14).toIntOrNull() ?: return null else 0
 
-        val offsetMin = if (trimmed.length >= 19) {
+        val offsetMin = if (trimmed.length >= digits + 5 && trimmed.last().isDigit()) {
             // Format: " +0200" or " -0130"
             val sign = when (trimmed[trimmed.length - 5]) {
                 '+' -> 1

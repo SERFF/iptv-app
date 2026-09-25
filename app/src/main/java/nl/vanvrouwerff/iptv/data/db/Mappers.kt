@@ -15,7 +15,7 @@ fun ChannelEntity.toDomain(): Channel = Channel(
 
 fun Channel.toEntity(
     sortIndex: Int,
-    addedAt: Long = System.currentTimeMillis(),
+    addedAt: Long = 0L,
 ): ChannelEntity = ChannelEntity(
     id = id,
     name = name,

@@ -15,7 +15,9 @@ import nl.vanvrouwerff.iptv.data.ContentType
 import nl.vanvrouwerff.iptv.data.db.ProgrammeEntity
 import nl.vanvrouwerff.iptv.data.epg.XmltvParser
 import nl.vanvrouwerff.iptv.data.remote.HttpClient
+import nl.vanvrouwerff.iptv.data.xtream.CategoryFilter
 import nl.vanvrouwerff.iptv.data.xtream.XtreamApi
+import nl.vanvrouwerff.iptv.data.xtream.XtreamUrls
 import nl.vanvrouwerff.iptv.data.xtream.XtreamCategory
 import nl.vanvrouwerff.iptv.data.xtream.XtreamLiveStream
 import nl.vanvrouwerff.iptv.data.xtream.XtreamSeries
@@ -26,34 +28,31 @@ class XtreamPlaylistRepository(
     private val host: String,
     private val username: String,
     private val password: String,
+    private val categoryFilter: CategoryFilter = CategoryFilter(emptyList()),
 ) : PlaylistRepository {
 
     private val api: XtreamApi = HttpClient.retrofitFor(host).create(XtreamApi::class.java)
     private val json: Json get() = HttpClient.json
 
-    /**
-     * Country-based catalogue filter. Providers tag every category with a `┃XX┃` country
-     * prefix ("┃NL┃ NEDERLAND HD", "┃UK┃ SKY SPORTS", "┃EN┃ COMEDY", …). Without filtering
-     * the full catalogue is ~200k rows for a typical reseller, which takes 3–4 min to
-     * persist on a Formuler Z10 Pro MAX. Restricting to NL/UK/US/USA/EN drops it to
-     * ~75k rows — a 2.5× speedup end-to-end — and cuts memory pressure during bulk insert.
-     *
-     * `EN` is included because most English-language movie/series categories (comedy,
-     * drama, HBO, Netflix, …) live under that prefix rather than under ┃US┃/┃UK┃.
-     *
-     * Matched against `category_name`, not `group-title`, so the same logic works for both
-     * parsed DTO shapes. Categories with no recognized prefix drop out — providers put
-     * those behind prefixes universally, so a missing prefix generally means "not for us".
-     */
-    private val allowedCategoryPrefixes = listOf("┃NL┃", "┃UK┃", "┃US┃", "┃USA┃", "┃EN┃")
-
-    private fun isAllowedCategory(categoryName: String?): Boolean {
-        if (categoryName == null) return false
-        return allowedCategoryPrefixes.any { categoryName.startsWith(it) }
+    private fun <T> applyFilter(items: List<T>, category: (T) -> String?, label: String): List<T> {
+        if (!categoryFilter.isEnabled) return items
+        val kept = items.filter { categoryFilter.accepts(category(it)) }
+        // A provider that doesn't use the prefix convention would otherwise end up with an
+        // empty catalogue; better to show everything than nothing.
+        if (kept.isEmpty() && items.isNotEmpty()) {
+            Log.w(TAG, "$label: category filter matched nothing, keeping all ${items.size}")
+            return items
+        }
+        return kept
     }
 
     @OptIn(ExperimentalSerializationApi::class)
-    override suspend fun fetch(etag: String?, lastModified: String?): PlaylistSnapshot = withContext(Dispatchers.IO) {
+    override suspend fun fetch(
+        etag: String?,
+        lastModified: String?,
+        onProgress: (ImportProgress) -> Unit,
+    ): PlaylistSnapshot = withContext(Dispatchers.IO) {
+        onProgress(ImportProgress(ImportProgress.Stage.Downloading, 0))
         // Sequential on purpose. Providers can return 30-60 MB per response for VOD/series;
         // parallelising means those bodies sit in memory at the same time and blow the heap.
         // Live is the backbone; VOD and series are best-effort.
@@ -62,6 +61,7 @@ class XtreamPlaylistRepository(
         val liveStreams = api.getLiveStreams(username, password)
         val live = mapLive(liveCats, liveStreams)
         Log.i(TAG, "Live: ${live.size} channels kept, ${liveCats.size} categories")
+        onProgress(ImportProgress(ImportProgress.Stage.Live, live.size))
 
         val vod: List<Channel> = runCatching {
             val cats = api.getVodCategories(username, password)
@@ -69,6 +69,7 @@ class XtreamPlaylistRepository(
                 .useStream { ListSerializer(XtreamVodStream.serializer()).decodeFrom(it) }
             val mapped = mapVod(cats, streams)
             Log.i(TAG, "VOD: ${mapped.size} movies kept (of ${streams.size}), ${cats.size} categories")
+            onProgress(ImportProgress(ImportProgress.Stage.Movies, mapped.size))
             mapped
         }.onFailure { Log.e(TAG, "VOD fetch/decode failed", it) }
             .getOrElse { emptyList() }
@@ -79,6 +80,7 @@ class XtreamPlaylistRepository(
                 .useStream { ListSerializer(XtreamSeries.serializer()).decodeFrom(it) }
             val mapped = mapSeries(cats, list)
             Log.i(TAG, "Series: ${mapped.size} shows kept (of ${list.size}), ${cats.size} categories")
+            onProgress(ImportProgress(ImportProgress.Stage.Series, mapped.size))
             mapped
         }.onFailure { Log.e(TAG, "Series fetch/decode failed", it) }
             .getOrElse { emptyList() }
@@ -93,14 +95,12 @@ class XtreamPlaylistRepository(
         val keptEpgIds = live.mapNotNullTo(HashSet()) { it.epgChannelId }
         val programmes: List<ProgrammeEntity> = runCatching {
             api.getXmltv(username, password).useStream { stream ->
-                XmltvParser.parse(stream)
+                XmltvParser.parse(stream) { key -> key in keptEpgIds }
             }
         }
-            .onSuccess { Log.i(TAG, "EPG: ${it.size} programmes parsed") }
+            .onSuccess { Log.i(TAG, "EPG: ${it.size} programmes kept for subscribed channels") }
             .onFailure { Log.e(TAG, "EPG fetch/parse failed", it) }
             .getOrElse { emptyList() }
-            .filter { it.channelKey in keptEpgIds }
-            .also { Log.i(TAG, "EPG: ${it.size} programmes kept for subscribed channels") }
 
         PlaylistSnapshot(channels = keptChannels, programmes = programmes)
     }
@@ -121,16 +121,16 @@ class XtreamPlaylistRepository(
         streams: List<XtreamLiveStream>,
     ): List<Channel> {
         val names = categories.associate { it.categoryId.asScalarString() to it.categoryName }
-        return streams.mapNotNull { s ->
-            val groupTitle = s.categoryId?.asScalarString()?.let(names::get)
-            if (!isAllowedCategory(groupTitle)) return@mapNotNull null
+        val groupOf = { s: XtreamLiveStream -> s.categoryId?.asScalarString()?.let(names::get) }
+        return applyFilter(streams, groupOf, "Live").map { s ->
+            val groupTitle = groupOf(s)
             val streamId = s.streamId.asScalarString()
             Channel(
                 id = "xt-live:$streamId",
                 name = s.name,
                 logoUrl = s.streamIcon?.takeIf { it.isNotBlank() },
                 groupTitle = groupTitle,
-                streamUrl = "$host/live/$username/$password/$streamId.ts",
+                streamUrl = XtreamUrls.stream(host, "live", username, password, "$streamId.ts"),
                 epgChannelId = s.epgChannelId?.takeIf { it.isNotBlank() },
                 type = ContentType.TV,
             )
@@ -142,9 +142,9 @@ class XtreamPlaylistRepository(
         streams: List<XtreamVodStream>,
     ): List<Channel> {
         val names = categories.associate { it.categoryId.asScalarString() to it.categoryName }
-        return streams.mapNotNull { s ->
-            val groupTitle = s.categoryId?.asScalarString()?.let(names::get)
-            if (!isAllowedCategory(groupTitle)) return@mapNotNull null
+        val groupOf = { s: XtreamVodStream -> s.categoryId?.asScalarString()?.let(names::get) }
+        return applyFilter(streams, groupOf, "VOD").map { s ->
+            val groupTitle = groupOf(s)
             val streamId = s.streamId.asScalarString()
             val ext = s.containerExtension?.takeIf { it.isNotBlank() } ?: "mp4"
             Channel(
@@ -152,7 +152,7 @@ class XtreamPlaylistRepository(
                 name = s.name,
                 logoUrl = s.streamIcon?.takeIf { it.isNotBlank() },
                 groupTitle = groupTitle,
-                streamUrl = "$host/movie/$username/$password/$streamId.$ext",
+                streamUrl = XtreamUrls.stream(host, "movie", username, password, "$streamId.$ext"),
                 epgChannelId = null,
                 type = ContentType.MOVIE,
             )
@@ -164,9 +164,9 @@ class XtreamPlaylistRepository(
         series: List<XtreamSeries>,
     ): List<Channel> {
         val names = categories.associate { it.categoryId.asScalarString() to it.categoryName }
-        return series.mapNotNull { s ->
-            val groupTitle = s.categoryId?.asScalarString()?.let(names::get)
-            if (!isAllowedCategory(groupTitle)) return@mapNotNull null
+        val groupOf = { s: XtreamSeries -> s.categoryId?.asScalarString()?.let(names::get) }
+        return applyFilter(series, groupOf, "Series").map { s ->
+            val groupTitle = groupOf(s)
             val seriesId = s.seriesId.asScalarString()
             Channel(
                 id = "xt-series:$seriesId",

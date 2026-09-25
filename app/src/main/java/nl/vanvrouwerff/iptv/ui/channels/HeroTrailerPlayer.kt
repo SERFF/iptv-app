@@ -1,6 +1,7 @@
 package nl.vanvrouwerff.iptv.ui.channels
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,8 +31,22 @@ import com.pierfrancescosoffritti.androidyoutubeplayer.core.player.views.YouTube
 fun HeroTrailerPlayer(
     youtubeKey: String,
     modifier: Modifier = Modifier,
+    muted: Boolean = true,
     onError: () -> Unit = {},
 ) {
+    var ytPlayer by remember(youtubeKey) { mutableStateOf<YouTubePlayer?>(null) }
+    LaunchedEffect(muted, ytPlayer) {
+        val p = ytPlayer ?: return@LaunchedEffect
+        runCatching {
+            if (muted) {
+                p.setVolume(0)
+                p.mute()
+            } else {
+                p.unMute()
+                p.setVolume(100)
+            }
+        }
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     var playerViewRef by remember(youtubeKey) { mutableStateOf<YouTubePlayerView?>(null) }
 
@@ -52,6 +67,7 @@ fun HeroTrailerPlayer(
                             player.setVolume(0)
                             player.loadVideo(youtubeKey, 0f)
                         }.onFailure { onError() }
+                        ytPlayer = player
                     }
 
                     override fun onError(
@@ -69,7 +85,10 @@ fun HeroTrailerPlayer(
 
     DisposableEffect(youtubeKey) {
         onDispose {
-            playerViewRef?.release()
+            playerViewRef?.let {
+                lifecycleOwner.lifecycle.removeObserver(it)
+                it.release()
+            }
             playerViewRef = null
         }
     }

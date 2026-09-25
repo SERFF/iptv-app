@@ -100,4 +100,58 @@ class M3uParserTest {
         assertEquals(0, M3uParser.parse("").size)
         assertEquals(0, M3uParser.parse("#EXTM3U\n").size)
     }
+
+    @Test
+    fun `comma inside a quoted attribute does not split the name`() {
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="news" group-title="News, Sports",Channel One
+            http://x/1
+        """.trimIndent()
+
+        val ch = M3uParser.parse(content).single()
+
+        assertEquals("Channel One", ch.name)
+        assertEquals("News, Sports", ch.groupTitle)
+    }
+
+    @Test
+    fun `duplicate tvg-id keeps both channels with unique ids`() {
+        val content = """
+            #EXTM3U
+            #EXTINF:-1 tvg-id="npo1",NPO 1 HD
+            http://x/hd
+            #EXTINF:-1 tvg-id="npo1",NPO 1 SD
+            http://x/sd
+        """.trimIndent()
+
+        val channels = M3uParser.parse(content)
+
+        assertEquals(listOf("npo1", "npo1#2"), channels.map { it.id })
+        assertEquals(listOf("npo1", "npo1"), channels.map { it.epgChannelId })
+    }
+
+    @Test
+    fun `id without tvg-id does not depend on position`() {
+        val a = M3uParser.parse("#EXTINF:-1,Foo\nhttp://x/foo").single().id
+        val b = M3uParser.parse("#EXTINF:-1,Bar\nhttp://x/bar\n#EXTINF:-1,Foo\nhttp://x/foo")[1].id
+
+        assertEquals(a, b)
+    }
+
+    @Test
+    fun `movie urls are typed as movies`() {
+        val channels = M3uParser.parse(
+            "#EXTINF:-1,Film\nhttp://x/movie/u/p/1.mp4\n#EXTINF:-1,Zender\nhttp://x/live/u/p/2.ts",
+        )
+
+        assertEquals(listOf(ContentType.MOVIE, ContentType.TV), channels.map { it.type })
+    }
+
+    @Test
+    fun `EXTGRP supplies the group when group-title is missing`() {
+        val ch = M3uParser.parse("#EXTINF:-1,Foo\n#EXTGRP:Kids\nhttp://x/foo").single()
+
+        assertEquals("Kids", ch.groupTitle)
+    }
 }

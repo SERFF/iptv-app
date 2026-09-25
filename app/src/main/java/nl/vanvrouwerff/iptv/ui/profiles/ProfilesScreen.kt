@@ -9,8 +9,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,12 +24,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
@@ -55,6 +60,7 @@ fun ProfilesScreen(
     vm: ProfilesViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsState()
+    var pendingDelete by remember { mutableStateOf<ProfileRow?>(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(IptvPalette.BackgroundDeep)) {
             Column(
@@ -98,8 +104,21 @@ fun ProfilesScreen(
                         editing = editing,
                         onName = vm::updateDraftName,
                         onColor = vm::updateDraftColor,
+                        onEmoji = vm::updateDraftEmoji,
                         onCancel = vm::cancelEditing,
                         onSave = vm::saveEditing,
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                    )
+                } else if (pendingDelete != null) {
+                    val target = pendingDelete!!
+                    BackHandler(enabled = true) { pendingDelete = null }
+                    DeleteConfirmPanel(
+                        name = target.name,
+                        onCancel = { pendingDelete = null },
+                        onConfirm = {
+                            vm.delete(target.id)
+                            pendingDelete = null
+                        },
                         modifier = Modifier.fillMaxWidth().weight(1f),
                     )
                 } else {
@@ -116,7 +135,7 @@ fun ProfilesScreen(
                                     onPicked()
                                 },
                                 onEdit = { vm.startEditing(row.id) },
-                                onDelete = if (row.isDefault) null else ({ vm.delete(row.id) }),
+                                onDelete = if (row.isDefault) null else ({ pendingDelete = row }),
                             )
                         }
                         item(key = "__new__") {
@@ -175,7 +194,7 @@ private fun ProfileRowCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        text = row.name.take(1).uppercase(),
+                        text = row.avatarEmoji ?: row.name.take(1).uppercase(),
                         style = MaterialTheme.typography.titleLarge.copy(
                             color = Color.White,
                             fontWeight = FontWeight.Black,
@@ -272,6 +291,7 @@ private fun EditingPanel(
     editing: EditingState,
     onName: (String) -> Unit,
     onColor: (Int) -> Unit,
+    onEmoji: (String?) -> Unit,
     onCancel: () -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
@@ -329,6 +349,20 @@ private fun EditingPanel(
                 )
             }
         }
+        Text(
+            text = stringResource(R.string.profiles_emoji_label),
+            style = MaterialTheme.typography.labelMedium,
+            color = IptvPalette.TextSecondary,
+        )
+        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(ProfileEmojiChoices, key = { it ?: "__none__" }) { emoji ->
+                EmojiChip(
+                    emoji = emoji,
+                    selected = emoji == editing.avatarEmoji,
+                    onClick = { onEmoji(emoji) },
+                )
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = onSave,
@@ -370,4 +404,77 @@ private fun ColorSwatch(argb: Int, selected: Boolean, onClick: () -> Unit) {
                 else Modifier,
             ),
     ) { Box(Modifier.fillMaxSize()) }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun EmojiChip(emoji: String?, selected: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = ClickableSurfaceDefaults.shape(RoundedCornerShape(999.dp)),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = IptvPalette.SurfaceLift,
+            contentColor = IptvPalette.TextPrimary,
+            focusedContainerColor = IptvPalette.Accent,
+            focusedContentColor = Color.White,
+        ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1.1f),
+        modifier = Modifier
+            .height(40.dp)
+            .then(
+                if (selected)
+                    Modifier.border(3.dp, IptvPalette.TextPrimary, RoundedCornerShape(999.dp))
+                else Modifier,
+            ),
+    ) {
+        Box(modifier = Modifier.padding(horizontal = 12.dp).fillMaxHeight(), contentAlignment = Alignment.Center) {
+            Text(
+                text = emoji ?: stringResource(R.string.profiles_emoji_none),
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun DeleteConfirmPanel(
+    name: String,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val cancelFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { cancelFocus.requestFocus() } }
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.profiles_delete_title, name),
+            style = MaterialTheme.typography.headlineSmall.copy(
+                color = IptvPalette.TextPrimary,
+                fontWeight = FontWeight.Bold,
+            ),
+        )
+        Text(
+            text = stringResource(R.string.profiles_delete_body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = IptvPalette.TextSecondary,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onCancel, modifier = Modifier.focusRequester(cancelFocus)) {
+                Text(
+                    stringResource(R.string.profiles_delete_cancel),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+            Button(onClick = onConfirm) {
+                Text(
+                    stringResource(R.string.profiles_delete),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                )
+            }
+        }
+    }
 }

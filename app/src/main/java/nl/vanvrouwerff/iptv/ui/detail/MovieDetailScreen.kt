@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -71,12 +72,13 @@ import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
 @Composable
 fun MovieDetailScreen(
     channelId: String,
+    preview: Channel? = null,
     onBack: () -> Unit,
     onPlay: (Channel, resumeMs: Long) -> Unit,
     onPickRelated: (Channel) -> Unit = {},
     vm: MovieDetailViewModel = viewModel(),
 ) {
-    LaunchedEffect(channelId) { vm.load(channelId) }
+    LaunchedEffect(channelId) { vm.load(channelId, preview) }
     val state by vm.state.collectAsState()
 
     BackHandler(enabled = true, onBack = onBack)
@@ -86,16 +88,15 @@ fun MovieDetailScreen(
             .fillMaxSize()
             .background(IptvPalette.BackgroundDeep),
     ) {
+        val channel = state.channel ?: preview?.takeIf { it.id == channelId }
         when {
-            state.loading -> CenterMessage(stringResource(R.string.detail_loading))
-            state.channel == null -> CenterMessage(stringResource(R.string.detail_not_found))
+            channel == null && state.loading -> Unit
+            channel == null -> CenterMessage(stringResource(R.string.detail_not_found))
             else -> DetailBody(
-                channel = state.channel!!,
+                channel = channel,
                 state = state,
-                onPlay = { resumeMs -> onPlay(state.channel!!, resumeMs) },
+                onPlay = { resumeMs -> state.channel?.let { onPlay(it, resumeMs) } },
                 onToggleFavorite = vm::toggleFavorite,
-                onToggleWatchlist = vm::toggleWatchlist,
-                onBack = onBack,
                 onPickRelated = onPickRelated,
             )
         }
@@ -109,319 +110,115 @@ private fun DetailBody(
     state: MovieDetailState,
     onPlay: (resumeMs: Long) -> Unit,
     onToggleFavorite: () -> Unit,
-    onToggleWatchlist: () -> Unit,
-    onBack: () -> Unit,
     onPickRelated: (Channel) -> Unit,
 ) {
     val playFocus = remember { FocusRequester() }
     // Only focus Play on the first composition of this detail. Re-focusing on every state
     // update (e.g. when VOD info arrives) would yank the user back mid-scroll.
     LaunchedEffect(Unit) { runCatching { playFocus.requestFocus() } }
+    val context = LocalContext.current
+    val resumable = state.hasProgress && !state.watched
 
-    // Ken Burns on the backdrop — slow, cinematic zoom that loops forever. A 14s cycle at
-    // 6 % peak scale is imperceptible frame-to-frame but very much felt over the time a
-    // user reads the synopsis.
-    val kenBurns = rememberInfiniteTransition(label = "detail-ken-burns")
-    val backdropScale by kenBurns.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.06f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(14_000, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "detail-ken-burns-scale",
-    )
+    val meta = listOfNotNull(
+        state.releaseYear,
+        state.rating?.let { "\u2605 $it" },
+        state.durationLabel,
+        state.genre,
+        state.country,
+    ).joinToString("  \u00B7  ")
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Backdrop — full-bleed cover with a side-to-side gradient for legibility.
-        if (channel.logoUrl != null) {
-            AsyncImage(
-                model = channel.logoUrl,
-                contentDescription = channel.name,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .scale(backdropScale),
-            )
-        } else {
-            Box(
-                modifier = Modifier.fillMaxSize().background(
-                    Brush.linearGradient(listOf(IptvPalette.AccentDeep, IptvPalette.BackgroundDeep)),
-                ),
-            )
-        }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.horizontalGradient(
-                        0f to IptvPalette.BackgroundDeep.copy(alpha = 0.95f),
-                        0.5f to IptvPalette.BackgroundDeep.copy(alpha = 0.55f),
-                        1f to Color.Transparent,
-                    ),
-                ),
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        0.7f to Color.Transparent,
-                        1f to IptvPalette.BackgroundDeep,
-                    ),
-                ),
-        )
-
-        Row(modifier = Modifier.fillMaxSize()) {
-            // Box + BottomStart pins the content block to the bottom of the left pane.
-            // When plot/credits push the block taller than the screen, the overflow goes
-            // upward (title/meta get clipped off the top) instead of downward — this keeps
-            // Play / Favorite / Back and the related rail always reachable.
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight(),
+    DetailScaffold(
+        backdropUrl = state.backdropUrl ?: channel.logoUrl,
+        eyebrow = channel.groupTitle,
+        title = channel.name,
+        meta = meta,
+        headerExtra = {
+            if (resumable) {
+                Spacer(Modifier.height(12.dp))
+                ResumeIndicator(state.positionMs, state.durationMs, state.progressFraction)
+            }
+        },
+        actions = {
+            Button(
+                onClick = { onPlay(if (resumable) state.positionMs else 0L) },
+                modifier = Modifier.focusRequester(playFocus),
             ) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 64.dp, end = 48.dp, top = 72.dp, bottom = 56.dp),
-            ) {
-                channel.groupTitle?.let {
-                    Text(
-                        text = it.uppercase(),
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            color = IptvPalette.TextTertiary,
-                            letterSpacing = 3.sp,
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                }
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = stringResource(R.string.icon_desc_play),
+                    modifier = Modifier.padding(start = 12.dp).size(22.dp),
+                )
                 Text(
-                    text = channel.name,
-                    style = MaterialTheme.typography.displaySmall.copy(
-                        fontWeight = FontWeight.ExtraBold,
-                        color = IptvPalette.TextPrimary,
-                    ),
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
+                    text = stringResource(if (resumable) R.string.detail_resume else R.string.detail_play),
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
                 )
-
-                val metaParts = listOfNotNull(
-                    state.releaseYear,
-                    state.rating?.let { "\u2605 $it" },
-                    state.durationLabel,
-                    state.genre,
-                    state.country,
+            }
+            if (resumable) {
+                DetailActionButton(
+                    icon = Icons.Filled.Replay,
+                    label = stringResource(R.string.detail_play_from_start),
+                    onClick = { onPlay(0L) },
                 )
-                if (metaParts.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = metaParts.joinToString("  \u00B7  "),
-                        style = MaterialTheme.typography.labelMedium.copy(
-                            color = IptvPalette.TextTertiary,
-                            letterSpacing = 2.sp,
-                        ),
-                    )
-                }
-
-                state.plot?.let {
-                    if (it.length > 80) {
-                        Spacer(Modifier.height(20.dp))
-                        Text(
-                            text = stringResource(R.string.detail_section_overview),
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                color = IptvPalette.TextSecondary,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 2.sp,
-                            ),
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    } else {
-                        Spacer(Modifier.height(14.dp))
-                    }
-                    Text(
-                        text = it,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            lineHeight = 26.sp,
-                        ),
-                        color = IptvPalette.TextSecondary,
-                        maxLines = 5,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-
-                val credits = listOfNotNull(
-                    state.director?.let { "Regie: $it" },
-                    state.cast?.let { "Cast: $it" },
-                )
-                if (credits.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
-                    credits.forEach { line ->
-                        Text(
-                            text = line,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = IptvPalette.TextTertiary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-
-                if (state.hasProgress && !state.watched) {
-                    Spacer(Modifier.height(16.dp))
-                    ResumeIndicator(state.positionMs, state.durationMs, state.progressFraction)
-                }
-
-                Spacer(Modifier.height(24.dp))
-
-                val hasSideContent = state.similar.isNotEmpty() ||
-                    state.related.isNotEmpty() ||
-                    state.castList.isNotEmpty()
-                val context = LocalContext.current
-                Row(
-                    modifier = Modifier.padding(bottom = if (hasSideContent) 24.dp else 0.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Button(
-                        onClick = {
-                            onPlay(if (state.hasProgress && !state.watched) state.positionMs else 0L)
-                        },
-                        modifier = Modifier.focusRequester(playFocus),
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = stringResource(R.string.icon_desc_play),
-                            modifier = Modifier.padding(start = 12.dp).size(22.dp),
-                        )
-                        Text(
-                            text = if (state.hasProgress && !state.watched)
-                                stringResource(R.string.detail_resume)
-                            else
-                                stringResource(R.string.detail_play),
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            modifier = Modifier.padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                        )
-                    }
-                    state.trailerUrl?.let { url ->
-                        Button(
-                            onClick = {
-                                // ACTION_VIEW on a YouTube URL lets the system pick whatever
-                                // app is registered — YouTube on Google TV, browser otherwise.
-                                // NEW_TASK because we're not inside a standard Compose Activity
-                                // hierarchy that owns the launcher.
-                                runCatching {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    context.startActivity(intent)
-                                }
-                            },
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.OndemandVideo,
-                                contentDescription = stringResource(R.string.icon_desc_trailer),
-                                modifier = Modifier.padding(start = 10.dp).size(20.dp),
-                            )
-                            Text(
-                                text = stringResource(R.string.detail_trailer),
-                                modifier = Modifier.padding(start = 8.dp, end = 14.dp, top = 4.dp, bottom = 4.dp),
-                            )
+            }
+            state.trailerUrl?.let { url ->
+                DetailActionButton(
+                    icon = Icons.Filled.OndemandVideo,
+                    label = stringResource(R.string.detail_trailer),
+                    onClick = {
+                        runCatching {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(intent)
                         }
-                    }
-                    Button(onClick = onToggleFavorite) {
-                        val label = if (state.isFavorite)
-                            stringResource(R.string.detail_remove_from_list)
-                        else
-                            stringResource(R.string.detail_add_to_list)
-                        Icon(
-                            imageVector = if (state.isFavorite) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
-                            contentDescription = if (state.isFavorite)
-                                stringResource(R.string.icon_desc_bookmark_remove)
-                            else
-                                stringResource(R.string.icon_desc_bookmark_add),
-                            modifier = Modifier.padding(start = 10.dp).size(20.dp),
-                        )
-                        Text(
-                            text = label,
-                            modifier = Modifier.padding(start = 8.dp, end = 14.dp, top = 4.dp, bottom = 4.dp),
-                        )
-                    }
-                    Button(
-                        onClick = onToggleWatchlist,
-                        colors = androidx.tv.material3.ButtonDefaults.colors(
-                            containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.65f),
-                            contentColor = IptvPalette.TextPrimary,
-                            focusedContainerColor = IptvPalette.SurfaceElevated,
-                            focusedContentColor = IptvPalette.TextPrimary,
-                        ),
-                    ) {
-                        val label = if (state.inWatchlist)
-                            stringResource(R.string.detail_remove_from_watchlist)
-                        else
-                            stringResource(R.string.detail_save_for_later)
-                        Icon(
-                            imageVector = Icons.Filled.OndemandVideo,
-                            contentDescription = label,
-                            modifier = Modifier.padding(start = 10.dp).size(20.dp),
-                        )
-                        Text(
-                            text = label,
-                            modifier = Modifier.padding(start = 8.dp, end = 14.dp, top = 4.dp, bottom = 4.dp),
-                        )
-                    }
-                    Button(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.icon_desc_back),
-                            modifier = Modifier.padding(start = 10.dp).size(20.dp),
-                        )
-                        Text(
-                            stringResource(R.string.detail_back),
-                            modifier = Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
-                        )
-                    }
-                }
-
-                // Cast strip first (who's in it?), then the similar/related rail. Both
-                // optional — only one, the other, both, or neither may be populated
-                // depending on TMDB coverage.
-                if (state.castList.isNotEmpty()) {
-                    CastRail(cast = state.castList)
-                    Spacer(Modifier.height(20.dp))
-                }
-
-                when {
-                    state.similar.isNotEmpty() -> SimilarRail(
-                        titleRes = R.string.rail_more_like_this,
-                        channels = state.similar,
-                        onPick = onPickRelated,
-                    )
-                    state.related.isNotEmpty() && channel.groupTitle != null -> RelatedRail(
-                        groupTitle = channel.groupTitle,
-                        channels = state.related,
-                        onPick = onPickRelated,
-                    )
+                    },
+                )
+            }
+            DetailActionButton(
+                icon = if (state.isFavorite) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                label = stringResource(R.string.rail_my_list),
+                contentDescription = stringResource(
+                    if (state.isFavorite) R.string.detail_remove_from_list else R.string.detail_add_to_list,
+                ),
+                onClick = onToggleFavorite,
+            )
+        },
+    ) {
+        val credits = listOfNotNull(
+            state.director?.let { "Regie: $it" },
+            state.cast?.let { "Cast: $it" },
+        )
+        state.plot?.takeIf { it.isNotBlank() }?.let { plot ->
+            detailSection(key = "plot", title = context.getString(R.string.detail_section_overview)) {
+                FocusableTextBlock(text = plot, footer = credits)
+            }
+        }
+        if (state.castList.isNotEmpty()) {
+            detailSection(key = "cast", title = context.getString(R.string.rail_cast)) {
+                TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(state.castList, key = { it.id }) { member -> CastAvatar(member) }
                 }
             }
+        }
+        when {
+            state.similar.isNotEmpty() -> detailSection(
+                key = "similar",
+                title = context.getString(R.string.rail_more_like_this),
+            ) {
+                TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(state.similar, key = { it.id }) { ch ->
+                        RelatedCard(channel = ch, onClick = { onPickRelated(ch) })
+                    }
+                }
             }
-
-            if (channel.logoUrl != null) {
-                Box(
-                    modifier = Modifier
-                        .padding(48.dp)
-                        .size(width = 320.dp, height = 480.dp)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(IptvPalette.SurfaceLift)
-                        .align(Alignment.CenterVertically),
-                ) {
-                    AsyncImage(
-                        model = channel.logoUrl,
-                        contentDescription = channel.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
+            state.related.isNotEmpty() && channel.groupTitle != null -> detailSection(
+                key = "related",
+                title = context.getString(R.string.rail_related, channel.groupTitle),
+            ) {
+                TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(state.related, key = { it.id }) { ch ->
+                        RelatedCard(channel = ch, onClick = { onPickRelated(ch) })
+                    }
                 }
             }
         }
@@ -430,20 +227,31 @@ private fun DetailBody(
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun CastRail(cast: List<nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieDetailsRepository.CastEntry>) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = stringResource(R.string.rail_cast),
-            style = MaterialTheme.typography.labelLarge.copy(
-                color = IptvPalette.TextSecondary,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp,
-            ),
+internal fun DetailActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    contentDescription: String = label,
+) {
+    Button(
+        onClick = onClick,
+        colors = androidx.tv.material3.ButtonDefaults.colors(
+            containerColor = IptvPalette.SurfaceElevated.copy(alpha = 0.7f),
+            contentColor = IptvPalette.TextPrimary,
+            focusedContainerColor = IptvPalette.TextPrimary,
+            focusedContentColor = IptvPalette.BackgroundDeep,
+        ),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.padding(start = 8.dp).size(20.dp),
         )
-        Spacer(Modifier.height(10.dp))
-        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(cast, key = { it.id }) { member -> CastAvatar(member) }
-        }
+        Text(
+            text = label,
+            modifier = Modifier.padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+            maxLines = 1,
+        )
     }
 }
 
@@ -503,56 +311,6 @@ private fun CastAvatar(member: nl.vanvrouwerff.iptv.data.tmdb.TmdbMovieDetailsRe
 
 /** TMDB CDN base for the circular 185-wide profile thumbnail. */
 private const val TMDB_PROFILE_BASE = "https://image.tmdb.org/t/p/w185"
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-private fun SimilarRail(
-    @androidx.annotation.StringRes titleRes: Int,
-    channels: List<Channel>,
-    onPick: (Channel) -> Unit,
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = stringResource(titleRes),
-            style = MaterialTheme.typography.labelLarge.copy(
-                color = IptvPalette.TextSecondary,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp,
-            ),
-        )
-        Spacer(Modifier.height(10.dp))
-        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(channels, key = { it.id }) { ch ->
-                RelatedCard(channel = ch, onClick = { onPick(ch) })
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalTvMaterial3Api::class)
-@Composable
-private fun RelatedRail(
-    groupTitle: String,
-    channels: List<Channel>,
-    onPick: (Channel) -> Unit,
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = stringResource(R.string.rail_related, groupTitle),
-            style = MaterialTheme.typography.labelLarge.copy(
-                color = IptvPalette.TextSecondary,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 2.sp,
-            ),
-        )
-        Spacer(Modifier.height(10.dp))
-        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(channels, key = { it.id }) { ch ->
-                RelatedCard(channel = ch, onClick = { onPick(ch) })
-            }
-        }
-    }
-}
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable

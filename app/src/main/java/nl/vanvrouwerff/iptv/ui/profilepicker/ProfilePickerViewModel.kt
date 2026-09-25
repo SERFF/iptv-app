@@ -22,10 +22,12 @@ class ProfilePickerViewModel : ViewModel() {
         .observeProfiles()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
-    fun onProfileSelected(profile: ProfileEntity) {
+    /** [onPersisted] runs after the active profile is stored, so the home screen loads it. */
+    fun onProfileSelected(profile: ProfileEntity, onPersisted: () -> Unit) {
         viewModelScope.launch {
             app.settings.setActiveProfile(profile.id)
             app.settings.setLastProfileSessionAt()
+            onPersisted()
         }
     }
 }
