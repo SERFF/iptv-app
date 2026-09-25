@@ -10,4 +10,6 @@ data class Channel(
     val streamUrl: String?,
     val epgChannelId: String?,
     val type: ContentType,
+    /** Days of catch-up archive the provider keeps for this live channel; 0 = none. */
+    val archiveDays: Int = 0,
 )

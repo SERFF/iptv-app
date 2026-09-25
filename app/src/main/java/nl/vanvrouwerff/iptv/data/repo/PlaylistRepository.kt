@@ -22,4 +22,7 @@ interface PlaylistRepository {
         lastModified: String?,
         onProgress: (ImportProgress) -> Unit = {},
     ): PlaylistSnapshot
+
+    /** Only the EPG, for channels whose key is in [epgKeys]; null when the source has none. */
+    suspend fun fetchProgrammes(epgKeys: Set<String>): List<nl.vanvrouwerff.iptv.data.db.ProgrammeEntity>? = null
 }

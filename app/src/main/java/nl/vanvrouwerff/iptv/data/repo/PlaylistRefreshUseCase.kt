@@ -30,6 +30,7 @@ class PlaylistRefreshUseCase(
 ) {
 
     private val mutex = Mutex()
+    private val epgMutex = Mutex()
 
     private val _refreshing = MutableStateFlow(false)
     /** True while the catalogue (not the EPG) is being fetched and written. */
@@ -47,6 +48,7 @@ class PlaylistRefreshUseCase(
      *   the EPG write runs, so the UI can drop its spinner while the EPG persists.
      */
     suspend operator fun invoke(
+        force: Boolean = false,
         onCatalogueReady: () -> Unit = {},
     ): Result<Unit> {
         if (!mutex.tryLock()) {
@@ -60,7 +62,7 @@ class PlaylistRefreshUseCase(
             _lastError.value = null
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    refresh {
+                    refresh(force) {
                         _refreshing.value = false
                         onCatalogueReady()
                     }
@@ -78,11 +80,37 @@ class PlaylistRefreshUseCase(
         }
     }
 
-    private suspend fun refresh(onCatalogueReady: () -> Unit) {
-        val config = settings.sourceConfig.first()
-            ?: error("Geen bron geconfigureerd.")
+    /**
+     * Refreshes only the EPG (no channels, films or series). Skipped when a full refresh is
+     * running, since that one writes the EPG too.
+     */
+    suspend fun refreshEpg(): Result<Unit> {
+        if (mutex.isLocked || !epgMutex.tryLock()) return Result.success(Unit)
+        return try {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val repo = repository() ?: return@runCatching
+                    writeEpg(repo)
+                }.onFailure { Log.w(TAG, "EPG refresh failed", it) }
+            }
+        } finally {
+            epgMutex.unlock()
+        }
+    }
 
-        val repo: PlaylistRepository = when (config) {
+    private suspend fun writeEpg(repo: PlaylistRepository) {
+        val keys = dao.liveEpgKeys().toHashSet()
+        if (keys.isEmpty()) return
+        val programmes = repo.fetchProgrammes(keys) ?: return
+        if (programmes.isEmpty()) return
+        dao.replaceProgrammes(programmes)
+        settings.markEpgRefresh()
+        Log.i(TAG, "EPG refreshed: ${programmes.size} programmes")
+    }
+
+    private suspend fun repository(): PlaylistRepository? =
+        when (val config = settings.sourceConfig.first()) {
+            null -> null
             is SourceConfig.M3u -> M3uPlaylistRepository(config.url, HttpClient.okHttp)
             is SourceConfig.Xtream -> XtreamPlaylistRepository(
                 config.host,
@@ -92,12 +120,16 @@ class PlaylistRefreshUseCase(
             )
         }
 
-        val etag = settings.playlistEtag.first()
-        val lastMod = settings.playlistLastModified.first()
+    private suspend fun refresh(force: Boolean, onCatalogueReady: () -> Unit) {
+        val repo = repository() ?: error("Geen bron geconfigureerd.")
+
+        val etag = if (force) null else settings.playlistEtag.first()
+        val lastMod = if (force) null else settings.playlistLastModified.first()
         val snapshot = repo.fetch(etag, lastMod) { p -> _progress.value = p }
         if (snapshot.notModified) {
             settings.markRefreshSuccess()
             onCatalogueReady()
+            epgMutex.withLock { runCatching { writeEpg(repo) } }
             return
         }
 
@@ -121,17 +153,22 @@ class PlaylistRefreshUseCase(
         // force a full re-fetch on next launch.
         settings.savePlaylistValidators(snapshot.etag, snapshot.lastModified)
         settings.markRefreshSuccess()
+        settings.setCatalogueVersion(CATALOGUE_VERSION)
         onCatalogueChanged()
         onCatalogueReady()
 
         if (snapshot.programmes.isNotEmpty()) {
             dao.replaceProgrammes(snapshot.programmes)
+            settings.markEpgRefresh()
             val t3 = SystemClock.elapsedRealtime()
             Log.i(TAG, "persisted ${snapshot.programmes.size} EPG programmes in ${t3 - t2}ms")
         }
     }
 
-    private companion object {
-        const val TAG = "PlaylistRefresh"
+    companion object {
+        private const val TAG = "PlaylistRefresh"
+        /** Bump when the stored catalogue gains data that only a full reload fills in. */
+        const val CATALOGUE_VERSION = 15
+        const val EPG_MAX_AGE_MS: Long = 6L * 3_600_000L
     }
 }

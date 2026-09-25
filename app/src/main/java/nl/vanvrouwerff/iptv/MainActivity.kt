@@ -29,7 +29,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import nl.vanvrouwerff.iptv.data.Channel
+import nl.vanvrouwerff.iptv.R
 import nl.vanvrouwerff.iptv.data.ContentType
+import nl.vanvrouwerff.iptv.data.catchup.Catchup
 import nl.vanvrouwerff.iptv.data.settings.SourceConfig
 import nl.vanvrouwerff.iptv.player.PlayerActivity
 import nl.vanvrouwerff.iptv.ui.categories.CategoriesScreen
@@ -42,6 +44,7 @@ import nl.vanvrouwerff.iptv.ui.seriesdetail.SeriesRef
 import nl.vanvrouwerff.iptv.ui.seriesdetail.SeriesSeason
 import nl.vanvrouwerff.iptv.ui.profilepicker.ProfilePickerScreen
 import nl.vanvrouwerff.iptv.ui.profiles.ProfilesScreen
+import nl.vanvrouwerff.iptv.ui.reminders.ReminderHost
 import nl.vanvrouwerff.iptv.ui.settings.SettingsScreen
 import nl.vanvrouwerff.iptv.ui.splash.SplashScreen
 import nl.vanvrouwerff.iptv.ui.theme.IptvTheme
@@ -53,11 +56,14 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             IptvTheme {
-                AppRoot(
-                    onPlay = { channel, list, resumeMs -> openPlayer(channel, list, resumeMs) },
-                    onPlayEpisode = { ep, season, series, resumeMs -> openPlayerForEpisode(ep, season, series, resumeMs) },
-                    onPlayDirect = ::onPlayDirect,
-                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    AppRoot(
+                        onPlay = { channel, list, resumeMs -> openPlayer(channel, list, resumeMs) },
+                        onPlayEpisode = { ep, season, series, resumeMs -> openPlayerForEpisode(ep, season, series, resumeMs) },
+                        onPlayDirect = ::onPlayDirect,
+                    )
+                    ReminderHost(onWatch = ::openLiveChannel)
+                }
             }
         }
     }
@@ -101,6 +107,15 @@ class MainActivity : ComponentActivity() {
         startActivity(intent)
     }
 
+    private fun openLiveChannel(channelId: String) {
+        startActivity(
+            Intent(this, PlayerActivity::class.java).apply {
+                putExtra(PlayerActivity.EXTRA_CHANNEL_ID, channelId)
+                putExtra(PlayerActivity.EXTRA_SCOPE_TYPE, ContentType.TV.name)
+            },
+        )
+    }
+
     private fun openPlayerForEpisode(episode: Episode, season: SeriesSeason, series: SeriesRef, resumeMs: Long) {
         val orderedEpisodes = season.episodes
         val intent = Intent(this, PlayerActivity::class.java).apply {
@@ -132,7 +147,13 @@ class MainActivity : ComponentActivity() {
             val resumeMs = dao.getProgress(app.activeProfileId.value, channel.id)?.positionMs ?: 0L
             val intent = Intent(this@MainActivity, PlayerActivity::class.java).apply {
                 putExtra(PlayerActivity.EXTRA_CHANNEL_ID, channel.id)
-                if (channel.id.startsWith("xt-episode:")) {
+                if (Catchup.isCatchupId(channel.id)) {
+                    val url = channel.streamUrl ?: return@apply
+                    putExtra(PlayerActivity.EXTRA_ADHOC_IDS, arrayOf(channel.id))
+                    putExtra(PlayerActivity.EXTRA_ADHOC_URLS, arrayOf(url))
+                    putExtra(PlayerActivity.EXTRA_ADHOC_NAMES, arrayOf(channel.name))
+                    putExtra(PlayerActivity.EXTRA_ADHOC_TYPE, ContentType.MOVIE.name)
+                } else if (channel.id.startsWith("xt-episode:")) {
                     // Ad-hoc path — episode isn't in channels table.
                     val url = channel.streamUrl ?: return@apply
                     putExtra(PlayerActivity.EXTRA_ADHOC_IDS, arrayOf(channel.id))
@@ -163,6 +184,7 @@ private sealed interface Route {
     data class SeriesDetail(val seriesId: String, val preview: Channel? = null) : Route
     data class Categories(val type: ContentType, val category: String?) : Route
     data object Guide : Route
+    data class PinGate(val target: Route) : Route
 }
 
 /** Skip the cold-start profile picker if the user picked a profile within this window. */
@@ -208,6 +230,8 @@ private fun AppRoot(
         }.getOrDefault(false)
     }
 
+    val parentalPin by app.settings.parentalPin.collectAsState(initial = "")
+
     val showSplash = !resolved || !minSplashElapsed || (source != null && profilePickerNeeded == null)
 
     // Simple back stack on top of the computed root route (Welcome / ProfilePicker /
@@ -243,12 +267,19 @@ private fun AppRoot(
             AppRouteHost(
                 route = route,
                 onNavigate = { next ->
-                    if (next == Route.Channels) {
-                        pickerDismissed = true
-                        backStack.clear()
-                    } else {
-                        backStack.add(next)
+                    when {
+                        next == Route.Channels -> {
+                            pickerDismissed = true
+                            backStack.clear()
+                        }
+                        (next == Route.Settings || next == Route.Profiles) &&
+                            app.kidsMode.value && parentalPin.isNotEmpty() ->
+                            backStack.add(Route.PinGate(next))
+                        else -> backStack.add(next)
                     }
+                },
+                onReplace = { next ->
+                    if (backStack.isNotEmpty()) backStack[backStack.lastIndex] = next else backStack.add(next)
                 },
                 onBack = { if (backStack.isNotEmpty()) backStack.removeAt(backStack.lastIndex) },
                 onPlay = onPlay,
@@ -269,6 +300,7 @@ private fun AppRouteHost(
     route: Route,
     onNavigate: (Route) -> Unit,
     onBack: () -> Unit,
+    onReplace: (Route) -> Unit,
     onPlay: (Channel, List<Channel>, Long) -> Unit,
     onPlayEpisode: (Episode, SeriesSeason, SeriesRef, Long) -> Unit,
     onPlayDirect: (Channel) -> Unit,
@@ -332,9 +364,14 @@ private fun AppRouteHost(
                     }
                 },
             )
+            is Route.PinGate -> PinGateScreen(
+                onUnlocked = { onReplace(route.target) },
+                onCancel = onBack,
+            )
             Route.Guide -> GuideScreen(
                 onBack = onBack,
                 onPlay = { channel, list -> onPlay(channel, list, 0L) },
+                onPlayItem = onPlayDirect,
             )
             is Route.Categories -> CategoriesScreen(
                 type = route.type,
@@ -357,4 +394,17 @@ private fun AppRouteHost(
             )
         }
     } }
+}
+
+@Composable
+private fun PinGateScreen(onUnlocked: () -> Unit, onCancel: () -> Unit) {
+    val pin by IptvApp.get().settings.parentalPin.collectAsState(initial = "")
+    var error by remember { mutableStateOf<String?>(null) }
+    val wrong = androidx.compose.ui.res.stringResource(R.string.pin_wrong)
+    nl.vanvrouwerff.iptv.ui.parental.PinPad(
+        title = androidx.compose.ui.res.stringResource(R.string.pin_enter),
+        error = error,
+        onComplete = { entered -> if (entered == pin) onUnlocked() else error = wrong },
+        onCancel = onCancel,
+    )
 }

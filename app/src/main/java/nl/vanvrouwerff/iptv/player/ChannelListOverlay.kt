@@ -1,5 +1,6 @@
 package nl.vanvrouwerff.iptv.player
 
+import nl.vanvrouwerff.iptv.data.DisplayNames
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -110,7 +111,7 @@ fun ChannelListOverlay(
                 color = IptvPalette.TextTertiary,
             )
             Text(
-                text = group.title,
+                text = DisplayNames.clean(group.title),
                 style = MaterialTheme.typography.titleMedium.copy(
                     fontWeight = FontWeight.Bold,
                     color = IptvPalette.TextPrimary,

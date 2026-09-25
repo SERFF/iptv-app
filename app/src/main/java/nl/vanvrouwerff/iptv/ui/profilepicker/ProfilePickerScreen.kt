@@ -51,6 +51,13 @@ fun ProfilePickerScreen(
     vm: ProfilePickerViewModel = viewModel(),
 ) {
     val profiles by vm.profiles.collectAsState()
+    val app = nl.vanvrouwerff.iptv.IptvApp.get()
+    val pin by app.settings.parentalPin.collectAsState(initial = "")
+    val activeId by app.activeProfileId.collectAsState()
+    val kids by app.kidsMode.collectAsState()
+    var pendingProfile by remember { mutableStateOf<ProfileEntity?>(null) }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    val wrongPin = stringResource(R.string.pin_wrong)
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -76,7 +83,14 @@ fun ProfilePickerScreen(
                 items(profiles, key = { it.id }) { profile ->
                     ProfileTile(
                         profile = profile,
-                        onClick = { vm.onProfileSelected(profile, onPicked) },
+                        onClick = {
+                            if (kids && pin.isNotEmpty() && profile.id != activeId) {
+                                pinError = null
+                                pendingProfile = profile
+                            } else {
+                                vm.onProfileSelected(profile, onPicked)
+                            }
+                        },
                     )
                 }
             }
@@ -87,6 +101,21 @@ fun ProfilePickerScreen(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
             }
+        }
+        pendingProfile?.let { target ->
+            nl.vanvrouwerff.iptv.ui.parental.PinPad(
+                title = stringResource(R.string.pin_enter),
+                error = pinError,
+                onComplete = { entered ->
+                    if (entered == pin) {
+                        pendingProfile = null
+                        vm.onProfileSelected(target, onPicked)
+                    } else {
+                        pinError = wrongPin
+                    }
+                },
+                onCancel = { pendingProfile = null },
+            )
         }
     }
 }

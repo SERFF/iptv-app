@@ -32,10 +32,13 @@ class CategoriesViewModel : ViewModel() {
     private val type = MutableStateFlow<ContentType?>(null)
     private val selected = MutableStateFlow<String?>(null)
 
-    private val categories = type.flatMapLatest { t ->
+    private val kids = IptvApp.get().kidsMode
+
+    private val categories = combine(type, kids) { t, k -> t to k }.flatMapLatest { (t, k) ->
         if (t == null) kotlinx.coroutines.flow.flowOf(emptyList())
         else dao.observeGroupTitlesByType(t.name).map { titles ->
             titles.map { it ?: ChannelsUiState.UNCATEGORIZED }.distinct()
+                .filterNot { k && nl.vanvrouwerff.iptv.data.AdultContent.isAdultCategory(it) }
         }
     }
 

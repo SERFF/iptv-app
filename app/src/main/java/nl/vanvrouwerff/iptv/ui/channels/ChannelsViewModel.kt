@@ -27,6 +27,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import nl.vanvrouwerff.iptv.IptvApp
+import nl.vanvrouwerff.iptv.data.AdultContent
+import nl.vanvrouwerff.iptv.data.repo.PlaylistRefreshUseCase
 import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
 import nl.vanvrouwerff.iptv.data.db.WatchedEpisodeEntity
@@ -348,7 +350,7 @@ class ChannelsViewModel : ViewModel() {
         val byId = hits.chunked(500)
             .flatMap { dao.getChannelsByIds(it) }
             .associateBy { it.id }
-        return hits.mapNotNull { byId[it]?.toDomain() }
+        return AdultContent.filterChannels(hits.mapNotNull { byId[it]?.toDomain() }, app.kidsMode.value) { it.groupTitle }
     }
 
     fun rememberFocus(type: ContentType, memory: RailFocusMemory?) {
@@ -370,16 +372,18 @@ class ChannelsViewModel : ViewModel() {
     // all three warm; memory cost is bounded by `limitFor` plus the country filter.
     private val channelsByType: Map<ContentType, StateFlow<List<Channel>>> =
         ContentType.values().associateWith { type ->
-            dao.observeChannelsByType(type.name, limitFor(type))
-                .map { rows -> rows.map { it.toDomain() }.distinctBy { it.id } }
+            combine(dao.observeChannelsByType(type.name, limitFor(type)), app.kidsMode) { rows, kids ->
+                AdultContent.filterChannels(rows.map { it.toDomain() }.distinctBy { it.id }, kids) { it.groupTitle }
+            }
                 .flowOn(Dispatchers.Default)
                 .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
         }
 
     private val categoriesByType: Map<ContentType, StateFlow<List<String>>> =
         ContentType.values().associateWith { type ->
-            dao.observeCategoriesByType(type.name)
-                .map { rows -> rows.map { it.name }.distinct() }
+            combine(dao.observeCategoriesByType(type.name), app.kidsMode) { rows, kids ->
+                rows.map { it.name }.distinct().filterNot { kids && AdultContent.isAdultCategory(it) }
+            }
                 .flowOn(Dispatchers.Default)
                 .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
         }
@@ -409,7 +413,7 @@ class ChannelsViewModel : ViewModel() {
         val cutoff = System.currentTimeMillis() - RECENTLY_ADDED_WINDOW_MS
         selectedTypeFlow
             .flatMapLatest { type -> dao.observeRecentlyAdded(type = type.name, cutoff = cutoff, limit = 30) }
-            .map { rows -> rows.map { it.toDomain() } }
+            .map { rows -> AdultContent.filterChannels(rows.map { it.toDomain() }, app.kidsMode.value) { it.groupTitle } }
             .flowOn(Dispatchers.Default)
             .onEach { items -> _state.update { it.copy(recentlyAdded = items) } }
             .launchIn(viewModelScope)
@@ -634,8 +638,13 @@ class ChannelsViewModel : ViewModel() {
         viewModelScope.launch {
             val last = app.settings.lastRefreshSuccessAt.first()
             val ageMs = System.currentTimeMillis() - last
-            if (last == 0L || ageMs > FRESH_THRESHOLD_MS) {
-                refresh()
+            val outdated = last != 0L &&
+                app.settings.catalogueVersion.first() < PlaylistRefreshUseCase.CATALOGUE_VERSION
+            val epgAge = System.currentTimeMillis() - app.settings.lastEpgRefreshAt.first()
+            when {
+                outdated -> app.appScope.launch { app.refreshUseCase(force = true) }
+                last == 0L || ageMs > FRESH_THRESHOLD_MS -> refresh()
+                epgAge > PlaylistRefreshUseCase.EPG_MAX_AGE_MS -> app.appScope.launch { app.refreshUseCase.refreshEpg() }
             }
         }
     }

@@ -37,6 +37,7 @@ data class ProfileRow(
     val name: String,
     val colorArgb: Int,
     val avatarEmoji: String?,
+    val isKids: Boolean,
     val isActive: Boolean,
     val isDefault: Boolean,
 )
@@ -53,6 +54,7 @@ data class EditingState(
     val name: String,
     val colorArgb: Int,
     val avatarEmoji: String? = null,
+    val isKids: Boolean = false,
 ) {
     val isNew: Boolean get() = id == null
 }
@@ -82,6 +84,7 @@ class ProfilesViewModel : ViewModel() {
                         name = p.name,
                         colorArgb = p.colorArgb,
                         avatarEmoji = p.avatarEmoji,
+                        isKids = p.isKids,
                         isActive = p.id == activeId,
                         isDefault = p.id == IptvDatabase.DEFAULT_PROFILE_ID,
                     )
@@ -127,6 +130,7 @@ class ProfilesViewModel : ViewModel() {
                     name = row.name,
                     colorArgb = row.colorArgb,
                     avatarEmoji = row.avatarEmoji,
+                    isKids = row.isKids,
                 ),
             )
         }
@@ -146,6 +150,10 @@ class ProfilesViewModel : ViewModel() {
 
     fun updateDraftEmoji(emoji: String?) {
         _state.update { it.copy(editing = it.editing?.copy(avatarEmoji = emoji)) }
+    }
+
+    fun updateDraftKids(kids: Boolean) {
+        _state.update { it.copy(editing = it.editing?.copy(isKids = kids)) }
     }
 
     fun saveEditing() {
@@ -171,6 +179,7 @@ class ProfilesViewModel : ViewModel() {
                         sortIndex = sortIndex,
                         createdAt = System.currentTimeMillis(),
                         avatarEmoji = draft.avatarEmoji,
+                        isKids = draft.isKids,
                     ),
                 )
             } else {
@@ -181,7 +190,7 @@ class ProfilesViewModel : ViewModel() {
                 // createdAt from the stored row so the list ordering stays stable.
                 val stored = profileDao.getProfile(draft.id!!) ?: return@launch
                 profileDao.upsert(
-                    stored.copy(name = name, colorArgb = draft.colorArgb, avatarEmoji = draft.avatarEmoji),
+                    stored.copy(name = name, colorArgb = draft.colorArgb, avatarEmoji = draft.avatarEmoji, isKids = draft.isKids),
                 )
             }
             _state.update { it.copy(editing = null) }

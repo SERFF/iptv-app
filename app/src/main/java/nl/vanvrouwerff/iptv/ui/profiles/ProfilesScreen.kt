@@ -105,6 +105,7 @@ fun ProfilesScreen(
                         onName = vm::updateDraftName,
                         onColor = vm::updateDraftColor,
                         onEmoji = vm::updateDraftEmoji,
+                        onKids = vm::updateDraftKids,
                         onCancel = vm::cancelEditing,
                         onSave = vm::saveEditing,
                         modifier = Modifier.fillMaxWidth().weight(1f),
@@ -292,6 +293,7 @@ private fun EditingPanel(
     onName: (String) -> Unit,
     onColor: (Int) -> Unit,
     onEmoji: (String?) -> Unit,
+    onKids: (Boolean) -> Unit,
     onCancel: () -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
@@ -363,6 +365,12 @@ private fun EditingPanel(
                 )
             }
         }
+        nl.vanvrouwerff.iptv.ui.settings.SwitchRow(
+            title = stringResource(R.string.profiles_kids_label),
+            body = stringResource(R.string.profiles_kids_body),
+            checked = editing.isKids,
+            onToggle = { onKids(!editing.isKids) },
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = onSave,

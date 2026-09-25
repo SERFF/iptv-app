@@ -289,7 +289,27 @@ interface ChannelDao {
     )
     suspend fun getProgressUpdatedAt(profileId: String, channelId: String): Long?
 
+    // Reminders.
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertReminder(reminder: ReminderEntity)
+
+    @Query("DELETE FROM reminders WHERE channelId = :channelId AND startMs = :startMs")
+    suspend fun deleteReminder(channelId: String, startMs: Long)
+
+    @Query("SELECT * FROM reminders ORDER BY startMs")
+    fun observeReminders(): Flow<List<ReminderEntity>>
+
+    @Query("SELECT * FROM reminders WHERE startMs <= :dueBy AND startMs >= :notBefore ORDER BY startMs LIMIT 1")
+    suspend fun nextDueReminder(dueBy: Long, notBefore: Long): ReminderEntity?
+
+    @Query("DELETE FROM reminders WHERE startMs < :before")
+    suspend fun deleteRemindersBefore(before: Long)
+
     // EPG / programmes.
+
+    @Query("SELECT DISTINCT epgChannelId FROM channels WHERE type = 'TV' AND epgChannelId IS NOT NULL")
+    suspend fun liveEpgKeys(): List<String>
 
     @Transaction
     suspend fun replaceProgrammes(programmes: List<ProgrammeEntity>) {

@@ -19,8 +19,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TmdbPopularCacheEntity::class,
         ProfileEntity::class,
         WatchlistEntity::class,
+        ReminderEntity::class,
     ],
-    version = 14,
+    version = 17,
     exportSchema = true,
 )
 abstract class IptvDatabase : RoomDatabase() {
@@ -79,6 +80,35 @@ abstract class IptvDatabase : RoomDatabase() {
          * v13 → v14: films/series have one list ("Mijn lijst" = favourites). Everything the
          * user saved in "Bewaar voor later" moves into it, appended in the order it was saved.
          */
+        /** v16 → v17: kids profiles. */
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE profiles ADD COLUMN isKids INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        /** v15 → v16: programme reminders set from the guide. */
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS reminders (" +
+                        "channelId TEXT NOT NULL, " +
+                        "startMs INTEGER NOT NULL, " +
+                        "stopMs INTEGER NOT NULL, " +
+                        "title TEXT NOT NULL, " +
+                        "channelName TEXT NOT NULL, " +
+                        "PRIMARY KEY(channelId, startMs))",
+                )
+            }
+        }
+
+        /** v14 → v15: catch-up archive depth per live channel (filled on the next refresh). */
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE channels ADD COLUMN archiveDays INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         private val MIGRATION_13_14 = object : Migration(13, 14) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -285,7 +315,7 @@ abstract class IptvDatabase : RoomDatabase() {
                         MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                         MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
                         MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11,
-                        MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
+                        MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17,
                     )
                     .addCallback(object : RoomDatabase.Callback() {
                         // Fresh installs skip migrations entirely — Room just builds tables

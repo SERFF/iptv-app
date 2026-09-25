@@ -1,5 +1,6 @@
 package nl.vanvrouwerff.iptv.ui.guide
 
+import nl.vanvrouwerff.iptv.data.DisplayNames
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +46,7 @@ import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import nl.vanvrouwerff.iptv.R
 import nl.vanvrouwerff.iptv.data.Channel
+import nl.vanvrouwerff.iptv.data.catchup.Catchup
 import nl.vanvrouwerff.iptv.data.db.ProgrammeEntity
 import nl.vanvrouwerff.iptv.ui.channels.CategoryItem
 import nl.vanvrouwerff.iptv.ui.theme.FocusStyle
@@ -62,93 +64,170 @@ import java.util.Locale
 fun GuideScreen(
     onBack: () -> Unit,
     onPlay: (Channel, List<Channel>) -> Unit,
+    onPlayItem: (Channel) -> Unit,
     vm: GuideViewModel = viewModel(),
 ) {
     LaunchedEffect(Unit) { vm.load() }
+    LaunchedEffect(Unit) { vm.playRequests.collect { onPlayItem(it) } }
     val state by vm.state.collectAsState()
     BackHandler(enabled = true, onBack = onBack)
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(IptvPalette.BackgroundDeep)
-            .padding(horizontal = 48.dp, vertical = 20.dp),
-    ) {
-        Text(
-            text = stringResource(R.string.guide_title),
-            style = MaterialTheme.typography.headlineSmall.copy(
-                fontWeight = FontWeight.Bold,
-                color = IptvPalette.TextPrimary,
-            ),
-        )
-        Spacer(Modifier.height(10.dp))
-        if (state.loading) {
-            Text(stringResource(R.string.detail_loading), color = IptvPalette.TextSecondary)
-            return@Column
-        }
-        if (state.groups.isEmpty()) {
-            Text(stringResource(R.string.channels_empty_type_tv), color = IptvPalette.TextSecondary)
-            return@Column
-        }
-        TvLazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            itemsIndexed(state.groups, key = { _, g -> g.title }) { i, g ->
-                Box(Modifier.width(200.dp)) {
-                    CategoryItem(
-                        label = g.title,
-                        selected = i == state.groupIndex,
-                        onClick = { vm.selectGroup(i) },
+    Box(modifier = Modifier.fillMaxSize().background(IptvPalette.BackgroundDeep)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 48.dp, vertical = 20.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.guide_title),
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = IptvPalette.TextPrimary,
+                    ),
+                )
+                if (!state.loading && state.fromMs > 0L) {
+                    Spacer(Modifier.width(20.dp))
+                    Text(
+                        text = dayLabel(state.fromMs),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = IptvPalette.TextSecondary,
                     )
+                    Spacer(Modifier.weight(1f))
+                    TimeButton(stringResource(R.string.guide_earlier)) { vm.shiftWindow(-GuideViewModel.STEP_MS) }
+                    Spacer(Modifier.width(8.dp))
+                    TimeButton(stringResource(R.string.guide_now)) { vm.goToNow() }
+                    Spacer(Modifier.width(8.dp))
+                    TimeButton(stringResource(R.string.guide_later)) { vm.shiftWindow(GuideViewModel.STEP_MS) }
                 }
             }
-        }
-        Spacer(Modifier.height(10.dp))
-        val group = state.group ?: return@Column
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val timelineWidth = maxWidth - CHANNEL_CELL_WIDTH
-            val window = (state.toMs - state.fromMs).coerceAtLeast(1L)
-            fun x(ms: Long): Dp = timelineWidth * ((ms - state.fromMs).toFloat() / window)
-            Column {
-                TimeRuler(fromMs = state.fromMs, toMs = state.toMs, x = ::x)
-                Spacer(Modifier.height(6.dp))
-                val now = System.currentTimeMillis()
-                val firstFocus = remember(state.groupIndex) { FocusRequester() }
-                LaunchedEffect(state.groupIndex, state.programmesByKey.isNotEmpty()) {
-                    androidx.compose.runtime.withFrameNanos { }
-                    runCatching { firstFocus.requestFocus() }
-                }
-                TvLazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    contentPadding = PaddingValues(bottom = 32.dp),
-                ) {
-                    itemsIndexed(group.channels, key = { _, ch -> ch.id }) { rowIndex, ch ->
-                        val programmes = ch.epgChannelId?.let { state.programmesByKey[it] }.orEmpty()
-                        GuideRow(
-                            channel = ch,
-                            number = state.numberById[ch.id],
-                            programmes = programmes,
-                            now = now,
-                            fromMs = state.fromMs,
-                            toMs = state.toMs,
-                            x = ::x,
-                            timelineWidth = timelineWidth,
-                            firstFocus = if (rowIndex == 0) firstFocus else null,
-                            onPlay = { onPlay(ch, group.channels) },
+            Spacer(Modifier.height(10.dp))
+            if (state.loading) {
+                Text(stringResource(R.string.detail_loading), color = IptvPalette.TextSecondary)
+                return@Column
+            }
+            if (state.groups.isEmpty()) {
+                Text(stringResource(R.string.channels_empty_type_tv), color = IptvPalette.TextSecondary)
+                return@Column
+            }
+            TvLazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                itemsIndexed(state.groups, key = { _, g -> g.title }) { i, g ->
+                    Box(Modifier.width(200.dp)) {
+                        CategoryItem(
+                            label = DisplayNames.clean(g.title),
+                            selected = i == state.groupIndex,
+                            onClick = { vm.selectGroup(i) },
                         )
                     }
                 }
             }
-            // "Now" marker across the grid.
-            val nowX = x(System.currentTimeMillis())
-            if (nowX > 0.dp && nowX < timelineWidth) {
-                Box(
-                    modifier = Modifier
-                        .offset(x = CHANNEL_CELL_WIDTH + nowX)
-                        .width(2.dp)
-                        .fillMaxHeight()
-                        .background(IptvPalette.Accent.copy(alpha = 0.8f)),
-                )
+            Spacer(Modifier.height(10.dp))
+            val group = state.group ?: return@Column
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val timelineWidth = maxWidth - CHANNEL_CELL_WIDTH
+                val window = (state.toMs - state.fromMs).coerceAtLeast(1L)
+                fun x(ms: Long): Dp = timelineWidth * ((ms - state.fromMs).toFloat() / window)
+                Column {
+                    TimeRuler(fromMs = state.fromMs, toMs = state.toMs, x = ::x)
+                    Spacer(Modifier.height(6.dp))
+                    val now = System.currentTimeMillis()
+                    val firstFocus = remember(state.groupIndex) { FocusRequester() }
+                    LaunchedEffect(state.groupIndex, state.programmesByKey.isNotEmpty()) {
+                        androidx.compose.runtime.withFrameNanos { }
+                        runCatching { firstFocus.requestFocus() }
+                    }
+                    TvLazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        contentPadding = PaddingValues(bottom = 32.dp),
+                    ) {
+                        itemsIndexed(group.channels, key = { _, ch -> ch.id }) { rowIndex, ch ->
+                            val programmes = ch.epgChannelId?.let { state.programmesByKey[it] }.orEmpty()
+                            GuideRow(
+                                channel = ch,
+                                number = state.numberById[ch.id],
+                                programmes = programmes,
+                                now = now,
+                                fromMs = state.fromMs,
+                                toMs = state.toMs,
+                                x = ::x,
+                                timelineWidth = timelineWidth,
+                                firstFocus = if (rowIndex == 0) firstFocus else null,
+                                onPlay = { onPlay(ch, group.channels) },
+                                onPast = { p -> vm.openPast(ch, p) },
+                                onFuture = { p -> vm.toggleReminder(ch, p) },
+                                reminderKeys = state.reminderKeys,
+                            )
+                        }
+                    }
+                }
+                // "Now" marker across the grid.
+                val nowX = x(System.currentTimeMillis())
+                if (nowX > 0.dp && nowX < timelineWidth) {
+                    Box(
+                        modifier = Modifier
+                            .offset(x = CHANNEL_CELL_WIDTH + nowX)
+                            .width(2.dp)
+                            .fillMaxHeight()
+                            .background(IptvPalette.Accent.copy(alpha = 0.8f)),
+                    )
+                }
             }
         }
+        state.message?.let { text ->
+            Text(
+                text = text,
+                style = MaterialTheme.typography.titleSmall,
+                color = IptvPalette.TextPrimary,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 28.dp)
+                    .background(IptvPalette.SurfaceElevated, RoundedCornerShape(999.dp))
+                    .padding(horizontal = 22.dp, vertical = 12.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun dayLabel(ms: Long): String {
+    val zone = java.time.ZoneId.systemDefault()
+    val day = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
+    val today = java.time.LocalDate.now(zone)
+    val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ms))
+    val name = when (day) {
+        today -> stringResource(R.string.guide_today)
+        today.minusDays(1) -> stringResource(R.string.guide_yesterday)
+        today.plusDays(1) -> stringResource(R.string.guide_tomorrow)
+        else -> SimpleDateFormat("EEEE d MMMM", Locale("nl", "NL")).format(Date(ms))
+    }
+    return "$name · $time"
+}
+
+@OptIn(ExperimentalTvMaterial3Api::class)
+@Composable
+private fun TimeButton(label: String, onClick: () -> Unit) {
+    var focused by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(999.dp)
+    Surface(
+        onClick = onClick,
+        shape = ClickableSurfaceDefaults.shape(shape),
+        colors = ClickableSurfaceDefaults.colors(
+            containerColor = IptvPalette.SurfaceElevated,
+            contentColor = IptvPalette.TextSecondary,
+            focusedContainerColor = FocusStyle.Fill,
+            focusedContentColor = IptvPalette.TextPrimary,
+        ),
+        scale = ClickableSurfaceDefaults.scale(focusedScale = 1f),
+        modifier = Modifier
+            .onFocusChanged { focused = it.isFocused }
+            .tvFocus(focused, shape, FocusStyle.ChipScale),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
     }
 }
 
@@ -181,6 +260,9 @@ private fun GuideRow(
     timelineWidth: Dp,
     firstFocus: FocusRequester?,
     onPlay: () -> Unit,
+    onPast: (ProgrammeEntity) -> Unit,
+    onFuture: (ProgrammeEntity) -> Unit,
+    reminderKeys: Set<String>,
 ) {
     Row(modifier = Modifier.height(ROW_HEIGHT), verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.width(CHANNEL_CELL_WIDTH).padding(end = 10.dp)) {
@@ -209,15 +291,29 @@ private fun GuideRow(
                     val start = maxOf(p.startMs, fromMs)
                     val end = minOf(p.stopMs, toMs)
                     val live = p.startMs <= now && p.stopMs > now
+                    val past = p.stopMs <= now
+                    val replayable = past && Catchup.isAvailable(channel, p.startMs, p.stopMs, now)
                     val takesFirstFocus = firstFocus != null && i == (if (liveIndex >= 0) liveIndex else 0)
+                    val reminded = GuideViewModel.reminderKey(channel.id, p.startMs) in reminderKeys
                     GuideCell(
-                        title = p.title,
+                        title = when {
+                            replayable -> "↺ ${p.title}"
+                            reminded -> "🔔 ${p.title}"
+                            else -> p.title
+                        },
                         live = live,
+                        dimmed = past && !replayable,
                         modifier = Modifier
                             .offset(x = x(start))
                             .width((x(end) - x(start) - 2.dp).coerceAtLeast(8.dp))
                             .then(if (takesFirstFocus) Modifier.focusRequester(firstFocus!!) else Modifier),
-                        onClick = { if (live) onPlay() },
+                        onClick = {
+                            when {
+                                live -> onPlay()
+                                past -> onPast(p)
+                                else -> onFuture(p)
+                            }
+                        },
                     )
                 }
             }
@@ -232,6 +328,7 @@ private fun GuideCell(
     live: Boolean,
     modifier: Modifier,
     onClick: () -> Unit,
+    dimmed: Boolean = false,
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(6.dp)
@@ -240,7 +337,11 @@ private fun GuideCell(
         shape = ClickableSurfaceDefaults.shape(shape),
         colors = ClickableSurfaceDefaults.colors(
             containerColor = if (live) IptvPalette.SurfaceElevated else IptvPalette.SurfaceLift,
-            contentColor = if (live) IptvPalette.TextPrimary else IptvPalette.TextSecondary,
+            contentColor = when {
+                live -> IptvPalette.TextPrimary
+                dimmed -> IptvPalette.TextTertiary
+                else -> IptvPalette.TextSecondary
+            },
             focusedContainerColor = FocusStyle.Fill,
             focusedContentColor = IptvPalette.TextPrimary,
         ),

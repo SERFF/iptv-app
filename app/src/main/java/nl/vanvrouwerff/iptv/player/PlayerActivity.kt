@@ -1,5 +1,7 @@
 package nl.vanvrouwerff.iptv.player
 
+import nl.vanvrouwerff.iptv.data.DisplayNames
+import nl.vanvrouwerff.iptv.data.catchup.Catchup
 import android.content.Intent
 import android.media.AudioFormat
 import android.media.MediaCodecList
@@ -10,6 +12,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.annotation.OptIn
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -69,7 +72,14 @@ class PlayerActivity : ComponentActivity() {
 
     private var channels: List<Channel> = emptyList()
     private var currentIndex: Int = 0
-    private var previousIndex: Int = -1
+    private var previousChannel: Channel? = null
+    private var frameRateMatching = true
+    private var liveReturn: Pair<List<Channel>, Int>? = null
+    private val frameRateProbe = FrameRateProbe()
+    private var frameRateJob: kotlinx.coroutines.Job? = null
+    private var liveProgramme by mutableStateOf<nl.vanvrouwerff.iptv.data.db.ProgrammeEntity?>(null)
+    private var liveProgrammeJob: kotlinx.coroutines.Job? = null
+    private var playingChannel: Channel? = null
     private var progressJob: Job? = null
     private var statsJob: Job? = null
     private var cueJob: Job? = null
@@ -166,80 +176,91 @@ class PlayerActivity : ComponentActivity() {
 
         setContent {
             IptvTheme {
-                PlayerScreen(
-                    playerProvider = { player },
-                    aspectMode = aspectMode,
-                    banner = bannerChannel?.let {
-                        BannerInfo(
-                            channel = it,
-                            nowPlaying = bannerNowPlaying,
-                            next = bannerNext,
-                            channelNumber = bannerChannelNumber,
-                        )
-                    },
-                    numericInput = numericInput,
-                    errorState = errorOverlay,
-                    tracksOverlayVisible = tracksOverlayVisible,
-                    tracksSnapshot = tracksSnapshot,
-                    controllerVisible = controlsVisible,
-                    controls = controlsUi(),
-                    onPlayPause = ::togglePlayPause,
-                    onSeekBy = ::seekBy,
-                    onOpenTracks = {
-                        hideControls()
-                        tracksOverlayVisible = true
-                    },
-                    onFromStart = {
-                        player?.seekTo(0L)
-                        bumpControlsTimer()
-                    },
-                    onNextEpisode = {
-                        hideControls()
-                        channelStep(+1)
-                    },
-                    onControlsInteraction = ::bumpControlsTimer,
-                    subtitleDelayMs = subtitleDelayMs,
-                    displayedCues = displayedCues,
-                    statsOverlayVisible = statsOverlayVisible,
-                    statsSnapshot = statsSnapshot,
-                    nextEpisode = nextEpisodeInfo,
-                    isSeriesEpisode = currentChannelType == ContentType.SERIES,
-                    currentItemId = currentItemId,
-                    channelList = if (channelListVisible && channelGroups.isNotEmpty()) {
-                        ChannelListUi(
-                            groups = channelGroups,
-                            groupIndex = channelGroupIndex.coerceIn(0, channelGroups.lastIndex),
-                            currentChannelId = currentItemId,
-                            nowByChannelId = channelListNow,
-                            channelNumberOf = { numberById[it] },
-                        )
-                    } else null,
-                    onSelectChannelGroup = ::selectChannelGroup,
-                    onZapFromList = ::zapFromList,
-                    onPlayerViewReady = { view -> playerViewRef = view },
-                    onSelectAspect = { aspectMode = it },
-                    onSelectAudio = ::applyAudioSelection,
-                    onSelectSubtitle = ::applySubtitleSelection,
-                    onChangeSubtitleDelay = ::setSubtitleDelay,
-                    onRetryStream = ::retryCurrent,
-                    onSkipError = {
-                        errorOverlay = null
-                        channelStep(+1)
-                    },
-                    onExitOnError = {
-                        errorOverlay = null
-                        finish()
-                    },
-                    onPlayNextEpisodeNow = {
-                        nextEpisodeInfo = null
-                        nextEpisodeCancelled = false
-                        channelStep(+1)
-                    },
-                    onCancelNextEpisode = {
-                        nextEpisodeInfo = null
-                        nextEpisodeCancelled = true
-                    },
-                )
+                androidx.compose.foundation.layout.Box(modifier = androidx.compose.ui.Modifier.fillMaxSize()) {
+                    PlayerScreen(
+                        playerProvider = { player },
+                        aspectMode = aspectMode,
+                        banner = bannerChannel?.let {
+                            BannerInfo(
+                                channel = it,
+                                nowPlaying = bannerNowPlaying,
+                                next = bannerNext,
+                                channelNumber = bannerChannelNumber,
+                            )
+                        },
+                        numericInput = numericInput,
+                        errorState = errorOverlay,
+                        tracksOverlayVisible = tracksOverlayVisible,
+                        tracksSnapshot = tracksSnapshot,
+                        controllerVisible = controlsVisible,
+                        controls = controlsUi(),
+                        onPlayPause = ::togglePlayPause,
+                        onSeekBy = ::seekBy,
+                        onOpenTracks = {
+                            hideControls()
+                            tracksOverlayVisible = true
+                        },
+                        onFromStart = {
+                            player?.seekTo(0L)
+                            bumpControlsTimer()
+                        },
+                        onNextEpisode = {
+                            hideControls()
+                            channelStep(+1)
+                        },
+                        onPreviousChannel = {
+                            hideControls()
+                            flipLastChannel()
+                        },
+                        onStartOver = {
+                            hideControls()
+                            startOver()
+                        },
+                        onControlsInteraction = ::bumpControlsTimer,
+                        subtitleDelayMs = subtitleDelayMs,
+                        displayedCues = displayedCues,
+                        statsOverlayVisible = statsOverlayVisible,
+                        statsSnapshot = statsSnapshot,
+                        nextEpisode = nextEpisodeInfo,
+                        isSeriesEpisode = currentChannelType == ContentType.SERIES,
+                        currentItemId = currentItemId,
+                        channelList = if (channelListVisible && channelGroups.isNotEmpty()) {
+                            ChannelListUi(
+                                groups = channelGroups,
+                                groupIndex = channelGroupIndex.coerceIn(0, channelGroups.lastIndex),
+                                currentChannelId = currentItemId,
+                                nowByChannelId = channelListNow,
+                                channelNumberOf = { numberById[it] },
+                            )
+                        } else null,
+                        onSelectChannelGroup = ::selectChannelGroup,
+                        onZapFromList = ::zapFromList,
+                        onPlayerViewReady = { view -> playerViewRef = view },
+                        onSelectAspect = { aspectMode = it },
+                        onSelectAudio = ::applyAudioSelection,
+                        onSelectSubtitle = ::applySubtitleSelection,
+                        onChangeSubtitleDelay = ::setSubtitleDelay,
+                        onRetryStream = ::retryCurrent,
+                        onSkipError = {
+                            errorOverlay = null
+                            channelStep(+1)
+                        },
+                        onExitOnError = {
+                            errorOverlay = null
+                            finish()
+                        },
+                        onPlayNextEpisodeNow = {
+                            nextEpisodeInfo = null
+                            nextEpisodeCancelled = false
+                            channelStep(+1)
+                        },
+                        onCancelNextEpisode = {
+                            nextEpisodeInfo = null
+                            nextEpisodeCancelled = true
+                        },
+                    )
+                    nl.vanvrouwerff.iptv.ui.reminders.ReminderHost(onWatch = ::zapToChannelId)
+                }
             }
         }
 
@@ -302,7 +323,8 @@ class PlayerActivity : ComponentActivity() {
             if (loaded.isEmpty()) { finish(); return@launch }
             channels = loaded
             currentIndex = loaded.indexOfFirst { it.id == startId }.coerceAtLeast(0)
-            previousIndex = -1
+            previousChannel = null
+            playingChannel = null
             pendingResumeMs = resumeMs
             channelsLoaded = true
             if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) startPlayback()
@@ -321,7 +343,10 @@ class PlayerActivity : ComponentActivity() {
             scopeType != null -> dao.playableByType(scopeType)
             else -> emptyList()
         }
-        return rows.map { it.toDomain() }.filter { it.streamUrl != null }
+        return nl.vanvrouwerff.iptv.data.AdultContent.filterChannels(
+            rows.map { it.toDomain() }.filter { it.streamUrl != null },
+            IptvApp.get().kidsMode.value,
+        ) { it.groupTitle }
     }
 
     override fun onStart() {
@@ -378,7 +403,24 @@ class PlayerActivity : ComponentActivity() {
         // the selector at defaults rather than switching to DefaultTrackSelector.
         p.volume = 1f
         applyPlayerPreferences(p)
+        p.setVideoFrameMetadataListener { presentationTimeUs, _, _, _ ->
+            frameRateProbe.add(presentationTimeUs)?.let { fps ->
+                runOnUiThread {
+                    Log.i(TAG, "Measured frame rate: $fps fps")
+                    matchDisplayToFrameRate(fps)
+                }
+            }
+        }
         p.addAnalyticsListener(object : AnalyticsListener {
+            override fun onVideoInputFormatChanged(
+                eventTime: AnalyticsListener.EventTime,
+                format: Format,
+                decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?,
+            ) {
+                Log.i(TAG, "Video format ${format.width}x${format.height} @ ${format.frameRate} fps (${format.sampleMimeType})")
+                if (format.frameRate > 0f) matchDisplayToFrameRate(format.frameRate) else frameRateProbe.reset()
+            }
+
             override fun onDroppedVideoFrames(
                 eventTime: AnalyticsListener.EventTime,
                 droppedFrames: Int,
@@ -391,6 +433,7 @@ class PlayerActivity : ComponentActivity() {
             override fun onPlaybackStateChanged(state: Int) {
                 when (state) {
                     Player.STATE_READY -> {
+                        measureFrameRate()
                         // Stream is actually playing — any past transient errors are
                         // water under the bridge, reset so the next real error gets the
                         // full single-retry budget.
@@ -408,7 +451,7 @@ class PlayerActivity : ComponentActivity() {
                                     channelStep(+1)
                                 }
                             }
-                            ContentType.MOVIE -> finish()
+                            ContentType.MOVIE -> if (liveReturn != null) returnToLive() else finish()
                             ContentType.TV -> {}
                         }
                     }
@@ -574,7 +617,9 @@ class PlayerActivity : ComponentActivity() {
         val channel = channels.getOrNull(index) ?: return
         val url = channel.streamUrl ?: return
         saveCurrentProgress()
-        if (index != currentIndex) previousIndex = currentIndex
+        playingChannel?.let { if (it.id != channel.id && !Catchup.isCatchupId(it.id)) previousChannel = it }
+        playingChannel = channel
+        if (!Catchup.isCatchupId(channel.id)) liveReturn = null
         currentIndex = index
         currentChannelType = channel.type
         currentItemId = channel.id
@@ -593,6 +638,9 @@ class PlayerActivity : ComponentActivity() {
         // old media timeline and would mis-fire on the new one.
         synchronized(cueQueue) { cueQueue.clear() }
         displayedCues = emptyList()
+        frameRateProbe.reset()
+        frameRateJob?.cancel()
+        loadLiveProgramme(channel)
         val p = player ?: return
         if (resumeMs > 0L) {
             p.setMediaItem(MediaItem.fromUri(url), resumeMs)
@@ -602,6 +650,7 @@ class PlayerActivity : ComponentActivity() {
         p.prepare()
         val app = IptvApp.get()
         val profileId = app.activeProfileId.value
+        if (Catchup.isCatchupId(channel.id)) return
         app.appScope.launch {
             app.settings.setLastWatched(profileId, channel.id)
             seriesMeta?.takeIf { channel.type == ContentType.SERIES }?.let { meta ->
@@ -623,6 +672,38 @@ class PlayerActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    private fun loadLiveProgramme(channel: Channel) {
+        liveProgrammeJob?.cancel()
+        liveProgramme = null
+        val key = channel.epgChannelId
+        if (channel.type != ContentType.TV || channel.archiveDays <= 0 || key.isNullOrBlank()) return
+        liveProgrammeJob = lifecycleScope.launch {
+            val p = withContext(Dispatchers.IO) { dao.getNowPlayingFor(key, System.currentTimeMillis()) }
+            if (playingChannel?.id == channel.id) liveProgramme = p
+        }
+    }
+
+    /** Replays the programme that is on now from its start, via the channel's archive. */
+    private fun startOver() {
+        val live = channels.getOrNull(currentIndex)?.takeIf { it.type == ContentType.TV } ?: return
+        val programme = liveProgramme ?: return
+        lifecycleScope.launch {
+            val item = Catchup.item(live, programme.title, programme.startMs, programme.stopMs) ?: return@launch
+            if (playingChannel?.id != live.id) return@launch
+            liveReturn = channels to currentIndex
+            channels = listOf(item)
+            playChannel(0)
+        }
+    }
+
+    private fun returnToLive() {
+        val (list, index) = liveReturn ?: return
+        liveReturn = null
+        channels = list
+        playChannel(index)
+        channels.getOrNull(index)?.let(::showBanner)
     }
 
     private fun retryCurrent() {
@@ -713,7 +794,7 @@ class PlayerActivity : ComponentActivity() {
 
     private fun saveCurrentProgress() {
         val channel = channels.getOrNull(currentIndex) ?: return
-        if (channel.type == ContentType.TV) return
+        if (channel.type == ContentType.TV || Catchup.isCatchupId(channel.id)) return
         val p = player ?: return
         val pos = p.currentPosition
         val dur = p.duration
@@ -748,10 +829,40 @@ class PlayerActivity : ComponentActivity() {
         showBanner(channels[next])
     }
 
+    private fun zapToChannelId(id: String) {
+        val inList = channels.indexOfFirst { it.id == id }
+        if (inList >= 0) {
+            playChannel(inList)
+            showBanner(channels[inList])
+            return
+        }
+        val numbered = numberedChannels.indexOfFirst { it.id == id }
+        if (numbered >= 0) {
+            channels = numberedChannels
+            playChannel(numbered)
+            showBanner(channels[numbered])
+            return
+        }
+        lifecycleScope.launch {
+            val ch = withContext(Dispatchers.IO) { dao.getChannelsByIds(listOf(id)) }.firstOrNull()?.toDomain() ?: return@launch
+            channels = listOf(ch)
+            playChannel(0)
+            showBanner(ch)
+            loadLiveIndex()
+        }
+    }
+
     private fun flipLastChannel() {
-        val prev = previousIndex.takeIf { it in channels.indices } ?: return
-        playChannel(prev)
-        showBanner(channels[prev])
+        val prev = previousChannel ?: return
+        var index = channels.indexOfFirst { it.id == prev.id }
+        if (index < 0) {
+            val numbered = numberedChannels.indexOfFirst { it.id == prev.id }
+            if (numbered < 0) return
+            channels = numberedChannels
+            index = numbered
+        }
+        playChannel(index)
+        showBanner(channels[index])
     }
 
     private fun jumpToChannelNumber(n: Int) {
@@ -764,7 +875,6 @@ class PlayerActivity : ComponentActivity() {
                 val currentId = channels.getOrNull(currentIndex)?.id
                 channels = numberedChannels
                 currentIndex = numberedChannels.indexOfFirst { it.id == currentId }.coerceAtLeast(0)
-                previousIndex = -1
             }
             playChannel(n - 1)
             showBanner(target)
@@ -788,6 +898,7 @@ class PlayerActivity : ComponentActivity() {
                     profileId = IptvApp.get().activeProfileId.value,
                     favoritesLabel = getString(R.string.channel_list_favorites),
                     uncategorizedLabel = getString(R.string.channel_list_uncategorized),
+                    hideAdult = IptvApp.get().kidsMode.value,
                 )
             }
             val built = Triple(
@@ -859,7 +970,6 @@ class PlayerActivity : ComponentActivity() {
         if (index < 0) return
         if (channels != group.channels) {
             channels = group.channels
-            previousIndex = -1
             currentIndex = -1
         }
         playChannel(index)
@@ -948,6 +1058,7 @@ class PlayerActivity : ComponentActivity() {
             val audio = settings.preferredAudioLanguage.first()
             val subtitles = settings.preferredSubtitleLanguage.first()
             val tunneling = settings.hardwareAvSync.first()
+            frameRateMatching = settings.frameRateMatching.first()
             aspectMode = runCatching { AspectMode.valueOf(aspect) }.getOrDefault(AspectMode.FIT)
             val builder = p.trackSelectionParameters.buildUpon()
             if (audio.isNotBlank()) builder.setPreferredAudioLanguage(audio)
@@ -966,6 +1077,18 @@ class PlayerActivity : ComponentActivity() {
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         // Numeric digits always enter the channel OSD — even when a panel is open; the user
         // intent is clearly "go to this channel", so we close panels implicitly.
+        if (IptvApp.get().reminders.due.value != null) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_DPAD_RIGHT,
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER,
+                KeyEvent.KEYCODE_BACK,
+                -> return super.onKeyDown(keyCode, event)
+            }
+        }
         val digit = keyCode - KeyEvent.KEYCODE_0
         if (digit in 0..9) {
             channelListVisible = false
@@ -1057,6 +1180,14 @@ class PlayerActivity : ComponentActivity() {
         }
 
         return when (keyCode) {
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ESCAPE -> {
+                if (liveReturn != null) {
+                    returnToLive()
+                    true
+                } else {
+                    super.onKeyDown(keyCode, event)
+                }
+            }
             KeyEvent.KEYCODE_MEDIA_PLAY,
             KeyEvent.KEYCODE_MEDIA_PAUSE,
             KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
@@ -1177,19 +1308,61 @@ class PlayerActivity : ComponentActivity() {
             isSeries && meta != null && episodeNumber != null ->
                 "S${meta.seasonNumber}:A$episodeNumber \u00B7 ${current.name}"
             isSeries -> current.name
-            else -> current.groupTitle
+            else -> current.groupTitle?.let(DisplayNames::clean)
         }
         return ControlsUi(
             title = title,
             subtitle = subtitle,
             isLive = current.type == ContentType.TV,
             hasNextEpisode = isSeries && currentIndex < channels.lastIndex,
+            hasPreviousChannel = current.type == ContentType.TV && previousChannel != null,
+            canStartOver = current.type == ContentType.TV && liveProgramme != null,
             focusToken = controlsFocusToken,
         )
     }
 
+    /** Fallback when neither the container nor the frame callbacks give a frame rate (tunneled TS). */
+    private fun measureFrameRate() {
+        if (!frameRateMatching || frameRateProbe.hasReported()) return
+        frameRateJob?.cancel()
+        val p = player ?: return
+        frameRateJob = lifecycleScope.launch {
+            delay(FRAME_RATE_SETTLE_MS)
+            val c0 = p.videoDecoderCounters?.renderedOutputBufferCount ?: return@launch
+            val t0 = android.os.SystemClock.elapsedRealtime()
+            delay(FRAME_RATE_WINDOW_MS)
+            if (player !== p || !p.isPlaying || frameRateProbe.hasReported()) return@launch
+            val c1 = p.videoDecoderCounters?.renderedOutputBufferCount ?: return@launch
+            val seconds = (android.os.SystemClock.elapsedRealtime() - t0) / 1000f
+            val measured = (c1 - c0) / seconds
+            val fps = FrameRateProbe.snap(measured) ?: return@launch
+            frameRateProbe.markReported()
+            Log.i(TAG, "Measured frame rate: $measured → $fps fps")
+            matchDisplayToFrameRate(fps)
+        }
+    }
+
+    private fun matchDisplayToFrameRate(fps: Float) {
+        if (!frameRateMatching) return
+        val display = window.decorView.display ?: return
+        val current = display.mode
+        fun toMode(m: android.view.Display.Mode) =
+            FrameRateMatcher.Mode(m.modeId, m.physicalWidth, m.physicalHeight, m.refreshRate)
+        val target = FrameRateMatcher.pick(
+            fps = fps,
+            current = toMode(current),
+            available = display.supportedModes.map(::toMode),
+        ) ?: return
+        if (window.attributes.preferredDisplayModeId == target.id) return
+        Log.i(TAG, "Frame rate $fps fps: switching display to ${target.width}x${target.height}@${target.refreshRate}")
+        window.attributes = window.attributes.also { it.preferredDisplayModeId = target.id }
+    }
+
     override fun onStop() {
         super.onStop()
+        if (window.attributes.preferredDisplayModeId != 0) {
+            window.attributes = window.attributes.also { it.preferredDisplayModeId = 0 }
+        }
         val p = player
         val current = channels.getOrNull(currentIndex)
         if (p != null && current != null && current.type != ContentType.TV) {
@@ -1263,6 +1436,8 @@ class PlayerActivity : ComponentActivity() {
         /** Remaining-playback threshold that triggers the "Volgende aflevering"-overlay. */
         const val NEXT_EPISODE_WINDOW_MS: Long = 15_000L
         private const val TAG = "PlayerActivity"
+        private const val FRAME_RATE_SETTLE_MS = 2_500L
+        private const val FRAME_RATE_WINDOW_MS = 2_000L
     }
 }
 

@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -59,6 +60,8 @@ data class ControlsUi(
     val subtitle: String?,
     val isLive: Boolean,
     val hasNextEpisode: Boolean,
+    val hasPreviousChannel: Boolean = false,
+    val canStartOver: Boolean = false,
     /** Bumped by the activity to pull focus back to the timebar (e.g. after a seek key). */
     val focusToken: Int,
 )
@@ -77,6 +80,8 @@ fun PlayerControlsOverlay(
     onOpenTracks: () -> Unit,
     onFromStart: () -> Unit,
     onNextEpisode: () -> Unit,
+    onPreviousChannel: () -> Unit,
+    onStartOver: () -> Unit,
     onInteraction: () -> Unit,
 ) {
     var positionMs by remember { mutableLongStateOf(0L) }
@@ -193,6 +198,20 @@ fun PlayerControlsOverlay(
                         icon = Icons.Filled.Replay,
                         label = stringResource(R.string.detail_play_from_start),
                         onClick = onFromStart,
+                    )
+                }
+                if (ui.canStartOver) {
+                    ControlButton(
+                        icon = Icons.Filled.Replay,
+                        label = stringResource(R.string.player_start_over),
+                        onClick = onStartOver,
+                    )
+                }
+                if (ui.hasPreviousChannel) {
+                    ControlButton(
+                        icon = Icons.Filled.SwapHoriz,
+                        label = stringResource(R.string.player_previous_channel),
+                        onClick = onPreviousChannel,
                     )
                 }
                 if (ui.hasNextEpisode) {

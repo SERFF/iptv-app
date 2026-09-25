@@ -105,6 +105,13 @@ class XtreamPlaylistRepository(
         PlaylistSnapshot(channels = keptChannels, programmes = programmes)
     }
 
+    override suspend fun fetchProgrammes(epgKeys: Set<String>): List<ProgrammeEntity> =
+        withContext(Dispatchers.IO) {
+            api.getXmltv(username, password).useStream { stream ->
+                XmltvParser.parse(stream) { key -> key in epgKeys }
+            }
+        }
+
     private companion object {
         const val TAG = "XtreamRepo"
     }
@@ -133,6 +140,11 @@ class XtreamPlaylistRepository(
                 streamUrl = XtreamUrls.stream(host, "live", username, password, "$streamId.ts"),
                 epgChannelId = s.epgChannelId?.takeIf { it.isNotBlank() },
                 type = ContentType.TV,
+                archiveDays = if (s.tvArchive?.asScalarString() == "1") {
+                    s.tvArchiveDuration?.asScalarString()?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                } else {
+                    0
+                },
             )
         }
     }

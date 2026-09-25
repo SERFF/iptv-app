@@ -107,6 +107,19 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { prefs -> prefs[LAST_REFRESH_AT] = nowMs }
     }
 
+    val lastEpgRefreshAt: Flow<Long> = context.dataStore.data.map { it[LAST_EPG_REFRESH_AT] ?: 0L }
+
+    suspend fun markEpgRefresh(nowMs: Long = System.currentTimeMillis()) {
+        context.dataStore.edit { prefs -> prefs[LAST_EPG_REFRESH_AT] = nowMs }
+    }
+
+    /** Version of the catalogue format stored in Room; below the app's version forces a full reload. */
+    val catalogueVersion: Flow<Int> = context.dataStore.data.map { it[CATALOGUE_VERSION] ?: 0 }
+
+    suspend fun setCatalogueVersion(version: Int) {
+        context.dataStore.edit { prefs -> prefs[CATALOGUE_VERSION] = version }
+    }
+
     /**
      * Epoch millis of the last time the user picked a profile (cold start picker or the
      * "Wisselen van profiel" shortcut). Used to gate the cold-start profile picker —
@@ -139,12 +152,27 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { prefs -> prefs[TRAILERS_AUTOPLAY] = enabled }
     }
 
+    /** Four-digit parental PIN; empty when none is set. */
+    val parentalPin: Flow<String> = context.dataStore.data.map { it[PARENTAL_PIN].orEmpty() }
+
+    suspend fun setParentalPin(pin: String) {
+        context.dataStore.edit { prefs -> if (pin.isBlank()) prefs.remove(PARENTAL_PIN) else prefs[PARENTAL_PIN] = pin }
+    }
+
     /** Tunneled playback: the video hardware keeps audio and video in sync. */
     val hardwareAvSync: Flow<Boolean> =
         context.dataStore.data.map { it[HARDWARE_AV_SYNC] ?: true }
 
     suspend fun setHardwareAvSync(enabled: Boolean) {
         context.dataStore.edit { prefs -> prefs[HARDWARE_AV_SYNC] = enabled }
+    }
+
+    /** Switch the display refresh rate to the stream's frame rate while playing. */
+    val frameRateMatching: Flow<Boolean> =
+        context.dataStore.data.map { it[FRAME_RATE_MATCHING] ?: true }
+
+    suspend fun setFrameRateMatching(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[FRAME_RATE_MATCHING] = enabled }
     }
 
     /** Player defaults. Aspect: "FIT" | "FILL" | "ZOOM". Languages: ISO 639-1, "" = no preference. */
@@ -224,11 +252,15 @@ class SettingsStore(private val context: Context) {
         val PLAYLIST_ETAG = stringPreferencesKey("playlist_etag")
         val PLAYLIST_LAST_MODIFIED = stringPreferencesKey("playlist_last_modified")
         val LAST_REFRESH_AT = longPreferencesKey("last_refresh_at")
+        val LAST_EPG_REFRESH_AT = longPreferencesKey("last_epg_refresh_at")
+        val CATALOGUE_VERSION = androidx.datastore.preferences.core.intPreferencesKey("catalogue_version")
         val LAST_PROFILE_SESSION_AT = longPreferencesKey("last_profile_session_at")
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
         val AUTO_REFRESH_ENABLED = booleanPreferencesKey("auto_refresh_enabled")
         val TRAILERS_AUTOPLAY = booleanPreferencesKey("trailers_autoplay")
         val HARDWARE_AV_SYNC = booleanPreferencesKey("hardware_av_sync")
+        val PARENTAL_PIN = stringPreferencesKey("parental_pin")
+        val FRAME_RATE_MATCHING = booleanPreferencesKey("frame_rate_matching")
         val PLAYER_ASPECT = stringPreferencesKey("player_aspect")
         val AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
         val SUBTITLE_LANGUAGE = stringPreferencesKey("subtitle_language")

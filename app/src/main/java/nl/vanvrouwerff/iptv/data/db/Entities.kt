@@ -19,6 +19,7 @@ data class ChannelEntity(
     val type: String,
     /** Epoch millis when this row first appeared in the catalogue (preserved across refreshes). */
     val addedAt: Long = 0L,
+    @androidx.room.ColumnInfo(defaultValue = "0") val archiveDays: Int = 0,
 )
 
 @Entity(
@@ -45,6 +46,8 @@ data class ProfileEntity(
     val createdAt: Long,
     /** Optional single-emoji avatar override; when null, render colour + initial instead. */
     val avatarEmoji: String? = null,
+    /** Kids profile: adult categories are hidden and leaving it needs the parental PIN. */
+    @androidx.room.ColumnInfo(defaultValue = "0") val isKids: Boolean = false,
 )
 
 @Entity(
@@ -178,4 +181,17 @@ data class TmdbPopularCacheEntity(
     @PrimaryKey val cacheKey: String,
     val payloadJson: String,
     val fetchedAt: Long,
+)
+
+/** A programme the user wants to be reminded of, one minute before it starts. */
+@Entity(
+    tableName = "reminders",
+    primaryKeys = ["channelId", "startMs"],
+)
+data class ReminderEntity(
+    val channelId: String,
+    val startMs: Long,
+    val stopMs: Long,
+    val title: String,
+    val channelName: String,
 )

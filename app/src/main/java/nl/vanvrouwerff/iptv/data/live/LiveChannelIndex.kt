@@ -1,6 +1,7 @@
 package nl.vanvrouwerff.iptv.data.live
 
 import kotlinx.coroutines.flow.first
+import nl.vanvrouwerff.iptv.data.AdultContent
 import nl.vanvrouwerff.iptv.data.Channel
 import nl.vanvrouwerff.iptv.data.ContentType
 import nl.vanvrouwerff.iptv.data.db.ChannelDao
@@ -27,8 +28,12 @@ data class LiveChannelIndex(
             profileId: String,
             favoritesLabel: String,
             uncategorizedLabel: String,
+            hideAdult: Boolean = false,
         ): LiveChannelIndex {
-            val all = dao.playableByType(ContentType.TV.name).map { it.toDomain() }
+            val all = AdultContent.filterChannels(
+                dao.playableByType(ContentType.TV.name).map { it.toDomain() },
+                hideAdult,
+            ) { it.groupTitle }
             val byId = all.associateBy { it.id }
             val favorites = dao.favoritesOrdered(profileId).mapNotNull { byId[it.channelId] }
             val favSet = favorites.mapTo(HashSet()) { it.id }

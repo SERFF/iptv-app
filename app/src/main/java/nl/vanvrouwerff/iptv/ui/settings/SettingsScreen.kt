@@ -43,6 +43,7 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Surface
 import androidx.tv.material3.Text
 import nl.vanvrouwerff.iptv.R
+import nl.vanvrouwerff.iptv.ui.parental.PinPad
 import nl.vanvrouwerff.iptv.data.settings.SourceTestResult
 import nl.vanvrouwerff.iptv.ui.theme.FocusStyle
 import nl.vanvrouwerff.iptv.ui.theme.IptvPalette
@@ -56,6 +57,7 @@ fun SettingsScreen(
     vm: SettingsViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsState()
+    var pinDialog by remember { mutableStateOf(false) }
 
     // BACK goes back without saving — matches the "Terug"-labelled button below, so the
     // remote BACK key is no longer a no-op on this screen.
@@ -91,6 +93,12 @@ fun SettingsScreen(
                     body = stringResource(R.string.settings_av_sync_body),
                     checked = state.hardwareAvSync,
                     onToggle = { vm.setHardwareAvSync(!state.hardwareAvSync) },
+                )
+                SwitchRow(
+                    title = stringResource(R.string.settings_afr_title),
+                    body = stringResource(R.string.settings_afr_body),
+                    checked = state.frameRateMatching,
+                    onToggle = { vm.setFrameRateMatching(!state.frameRateMatching) },
                 )
                 ChoiceRow(
                     title = stringResource(R.string.settings_aspect_title),
@@ -178,6 +186,24 @@ fun SettingsScreen(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                     )
                 }
+                ChoiceRow(
+                    title = stringResource(R.string.settings_pin_title),
+                    value = stringResource(if (state.parentalPinSet) R.string.settings_pin_set else R.string.settings_pin_unset),
+                    onClick = { pinDialog = true },
+                )
+                Text(
+                    stringResource(R.string.settings_pin_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = IptvPalette.TextSecondary,
+                )
+                if (state.parentalPinSet) {
+                    Button(onClick = { vm.setParentalPin("") }) {
+                        Text(
+                            stringResource(R.string.settings_pin_remove),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        )
+                    }
+                }
             }
 
             // About + required attributions. The TMDB disclaimer wording is dictated by
@@ -196,6 +222,17 @@ fun SettingsScreen(
                     )
                 }
             }
+        }
+        if (pinDialog) {
+            PinPad(
+                title = stringResource(R.string.pin_new),
+                error = null,
+                onComplete = { pin ->
+                    vm.setParentalPin(pin)
+                    pinDialog = false
+                },
+                onCancel = { pinDialog = false },
+            )
         }
     }
 }
@@ -342,7 +379,7 @@ private fun SettingsSection(title: String, content: @Composable ColumnScope.() -
 
 @OptIn(ExperimentalTvMaterial3Api::class)
 @Composable
-private fun SwitchRow(title: String, body: String?, checked: Boolean, onToggle: () -> Unit) {
+internal fun SwitchRow(title: String, body: String?, checked: Boolean, onToggle: () -> Unit) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(12.dp)
     Surface(

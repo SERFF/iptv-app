@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import nl.vanvrouwerff.iptv.data.db.IptvDatabase
 import nl.vanvrouwerff.iptv.data.remote.HttpClient
+import nl.vanvrouwerff.iptv.data.reminders.Reminders
+import nl.vanvrouwerff.iptv.data.repo.EpgRefreshWorker
 import nl.vanvrouwerff.iptv.data.repo.PlaylistRefreshScheduler
 import nl.vanvrouwerff.iptv.data.repo.PlaylistRefreshUseCase
 import nl.vanvrouwerff.iptv.data.settings.SettingsStore
@@ -38,6 +40,7 @@ class IptvApp : Application(), ImageLoaderFactory {
             onCatalogueChanged = { tmdbMovieDetails.invalidateMovieIndex() },
         )
     }
+    val reminders: Reminders by lazy { Reminders(database.channelDao(), appScope) }
     val tmdbPopular: TmdbPopularRepository by lazy {
         TmdbPopularRepository(database.channelDao())
     }
@@ -68,6 +71,13 @@ class IptvApp : Application(), ImageLoaderFactory {
         )
     }
 
+    /** True while the active profile is a kids profile. */
+    val kidsMode: StateFlow<Boolean> by lazy {
+        combine(activeProfileId, database.profileDao().observeProfiles()) { id, profiles ->
+            profiles.firstOrNull { it.id == id }?.isKids == true
+        }.distinctUntilChanged().stateIn(appScope, SharingStarted.Eagerly, false)
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
@@ -86,6 +96,8 @@ class IptvApp : Application(), ImageLoaderFactory {
                     PlaylistRefreshScheduler.apply(this@IptvApp, enabled, hour)
                 }
         }
+        EpgRefreshWorker.schedule(this)
+        reminders.start()
     }
 
     /**

@@ -1,5 +1,6 @@
 package nl.vanvrouwerff.iptv.player
 
+import nl.vanvrouwerff.iptv.data.DisplayNames
 import android.view.ViewGroup
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -94,6 +95,8 @@ fun PlayerScreen(
     onOpenTracks: () -> Unit = {},
     onFromStart: () -> Unit = {},
     onNextEpisode: () -> Unit = {},
+    onPreviousChannel: () -> Unit = {},
+    onStartOver: () -> Unit = {},
     onControlsInteraction: () -> Unit = {},
     onSelectChannelGroup: (Int) -> Unit = {},
     onZapFromList: (ChannelGroup, nl.vanvrouwerff.iptv.data.Channel) -> Unit = { _, _ -> },
@@ -260,6 +263,8 @@ fun PlayerScreen(
                     onOpenTracks = onOpenTracks,
                     onFromStart = onFromStart,
                     onNextEpisode = onNextEpisode,
+                    onPreviousChannel = onPreviousChannel,
+                    onStartOver = onStartOver,
                     onInteraction = onControlsInteraction,
                 )
             }
@@ -542,7 +547,7 @@ private fun InfoBanner(banner: BannerInfo) {
             }
             // Prefer EPG "Nu:" / "Straks:" lines over the static group-title when we have
             // EPG data — they're the question the user actually cares about on a zap.
-            val fallback = banner.channel.groupTitle
+            val fallback = banner.channel.groupTitle?.let(DisplayNames::clean)
             val nowLine = banner.nowPlaying?.let { stringResource(R.string.player_banner_now, it) } ?: fallback
             if (!nowLine.isNullOrBlank()) {
                 Text(

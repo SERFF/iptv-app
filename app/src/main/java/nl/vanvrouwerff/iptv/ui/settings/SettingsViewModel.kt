@@ -37,6 +37,8 @@ data class SettingsUiState(
     val autoRefreshHour: Int = 3,
     val trailersAutoplay: Boolean = true,
     val hardwareAvSync: Boolean = true,
+    val frameRateMatching: Boolean = true,
+    val parentalPinSet: Boolean = false,
     val playerAspect: String = "FIT",
     val audioLanguage: String = "",
     val subtitleLanguage: String = "",
@@ -85,6 +87,8 @@ class SettingsViewModel : ViewModel() {
                     autoRefreshHour = app.settings.autoRefreshHour.first(),
                     trailersAutoplay = app.settings.trailersAutoplay.first(),
                     hardwareAvSync = app.settings.hardwareAvSync.first(),
+                    frameRateMatching = app.settings.frameRateMatching.first(),
+                    parentalPinSet = app.settings.parentalPin.first().isNotEmpty(),
                     playerAspect = app.settings.playerAspect.first(),
                     audioLanguage = app.settings.preferredAudioLanguage.first(),
                     subtitleLanguage = app.settings.preferredSubtitleLanguage.first(),
@@ -159,6 +163,16 @@ class SettingsViewModel : ViewModel() {
     fun setTrailersAutoplay(enabled: Boolean) {
         _state.update { it.copy(trailersAutoplay = enabled) }
         viewModelScope.launch { app.settings.setTrailersAutoplay(enabled) }
+    }
+
+    fun setParentalPin(pin: String) {
+        _state.update { it.copy(parentalPinSet = pin.isNotEmpty()) }
+        viewModelScope.launch { app.settings.setParentalPin(pin) }
+    }
+
+    fun setFrameRateMatching(enabled: Boolean) {
+        _state.update { it.copy(frameRateMatching = enabled) }
+        viewModelScope.launch { app.settings.setFrameRateMatching(enabled) }
     }
 
     fun setHardwareAvSync(enabled: Boolean) {

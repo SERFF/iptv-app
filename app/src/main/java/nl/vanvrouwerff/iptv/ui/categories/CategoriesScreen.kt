@@ -1,5 +1,6 @@
 package nl.vanvrouwerff.iptv.ui.categories
 
+import nl.vanvrouwerff.iptv.data.DisplayNames
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -108,7 +109,7 @@ fun CategoriesScreen(
                         modifier = if (isSelected) Modifier.focusRequester(selectedFocus) else Modifier,
                     ) {
                         CategoryItem(
-                            label = cat,
+                            label = DisplayNames.clean(cat),
                             selected = isSelected,
                             onClick = { vm.select(cat) },
                         )
