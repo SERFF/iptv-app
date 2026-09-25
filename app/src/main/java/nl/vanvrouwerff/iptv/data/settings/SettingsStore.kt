@@ -139,6 +139,14 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { prefs -> prefs[TRAILERS_AUTOPLAY] = enabled }
     }
 
+    /** Tunneled playback: the video hardware keeps audio and video in sync. */
+    val hardwareAvSync: Flow<Boolean> =
+        context.dataStore.data.map { it[HARDWARE_AV_SYNC] ?: true }
+
+    suspend fun setHardwareAvSync(enabled: Boolean) {
+        context.dataStore.edit { prefs -> prefs[HARDWARE_AV_SYNC] = enabled }
+    }
+
     /** Player defaults. Aspect: "FIT" | "FILL" | "ZOOM". Languages: ISO 639-1, "" = no preference. */
     val playerAspect: Flow<String> = context.dataStore.data.map { it[PLAYER_ASPECT] ?: "FIT" }
     val preferredAudioLanguage: Flow<String> = context.dataStore.data.map { it[AUDIO_LANGUAGE] ?: "" }
@@ -220,6 +228,7 @@ class SettingsStore(private val context: Context) {
         val ACTIVE_PROFILE_ID = stringPreferencesKey("active_profile_id")
         val AUTO_REFRESH_ENABLED = booleanPreferencesKey("auto_refresh_enabled")
         val TRAILERS_AUTOPLAY = booleanPreferencesKey("trailers_autoplay")
+        val HARDWARE_AV_SYNC = booleanPreferencesKey("hardware_av_sync")
         val PLAYER_ASPECT = stringPreferencesKey("player_aspect")
         val AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
         val SUBTITLE_LANGUAGE = stringPreferencesKey("subtitle_language")

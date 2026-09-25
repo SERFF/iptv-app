@@ -34,6 +34,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioCapabilities
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory
 import androidx.media3.ui.PlayerView
@@ -946,6 +947,7 @@ class PlayerActivity : ComponentActivity() {
             val aspect = settings.playerAspect.first()
             val audio = settings.preferredAudioLanguage.first()
             val subtitles = settings.preferredSubtitleLanguage.first()
+            val tunneling = settings.hardwareAvSync.first()
             aspectMode = runCatching { AspectMode.valueOf(aspect) }.getOrDefault(AspectMode.FIT)
             val builder = p.trackSelectionParameters.buildUpon()
             if (audio.isNotBlank()) builder.setPreferredAudioLanguage(audio)
@@ -956,6 +958,7 @@ class PlayerActivity : ComponentActivity() {
                     .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
                     .setPreferredTextLanguage(subtitles)
             }
+            (builder as? DefaultTrackSelector.Parameters.Builder)?.setTunnelingEnabled(tunneling)
             if (player === p) p.trackSelectionParameters = builder.build()
         }
     }

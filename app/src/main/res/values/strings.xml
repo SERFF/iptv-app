@@ -277,6 +277,8 @@
     <string name="settings_section_refresh">Vernieuwen</string>
     <string name="settings_trailers_title">Trailers automatisch afspelen</string>
     <string name="settings_trailers_body">Start op het beginscherm na een paar seconden een trailer zonder geluid.</string>
+    <string name="settings_av_sync_title">Beeld en geluid via hardware synchroniseren</string>
+    <string name="settings_av_sync_body">Houdt geluid gelijk met het beeld (tunneled playback). Zet uit als een zender hapert of zwart blijft.</string>
     <string name="settings_aspect_title">Standaard beeldverhouding</string>
     <string name="settings_audio_lang_title">Voorkeurstaal audio</string>
     <string name="settings_subtitle_lang_title">Voorkeurstaal ondertitels</string>

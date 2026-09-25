@@ -86,6 +86,12 @@ fun SettingsScreen(
                     checked = state.trailersAutoplay,
                     onToggle = { vm.setTrailersAutoplay(!state.trailersAutoplay) },
                 )
+                SwitchRow(
+                    title = stringResource(R.string.settings_av_sync_title),
+                    body = stringResource(R.string.settings_av_sync_body),
+                    checked = state.hardwareAvSync,
+                    onToggle = { vm.setHardwareAvSync(!state.hardwareAvSync) },
+                )
                 ChoiceRow(
                     title = stringResource(R.string.settings_aspect_title),
                     value = aspectLabel(state.playerAspect),

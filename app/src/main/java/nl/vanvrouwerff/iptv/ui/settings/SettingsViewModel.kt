@@ -36,6 +36,7 @@ data class SettingsUiState(
     val autoRefreshEnabled: Boolean = false,
     val autoRefreshHour: Int = 3,
     val trailersAutoplay: Boolean = true,
+    val hardwareAvSync: Boolean = true,
     val playerAspect: String = "FIT",
     val audioLanguage: String = "",
     val subtitleLanguage: String = "",
@@ -83,6 +84,7 @@ class SettingsViewModel : ViewModel() {
                     autoRefreshEnabled = app.settings.autoRefreshEnabled.first(),
                     autoRefreshHour = app.settings.autoRefreshHour.first(),
                     trailersAutoplay = app.settings.trailersAutoplay.first(),
+                    hardwareAvSync = app.settings.hardwareAvSync.first(),
                     playerAspect = app.settings.playerAspect.first(),
                     audioLanguage = app.settings.preferredAudioLanguage.first(),
                     subtitleLanguage = app.settings.preferredSubtitleLanguage.first(),
@@ -157,6 +159,11 @@ class SettingsViewModel : ViewModel() {
     fun setTrailersAutoplay(enabled: Boolean) {
         _state.update { it.copy(trailersAutoplay = enabled) }
         viewModelScope.launch { app.settings.setTrailersAutoplay(enabled) }
+    }
+
+    fun setHardwareAvSync(enabled: Boolean) {
+        _state.update { it.copy(hardwareAvSync = enabled) }
+        viewModelScope.launch { app.settings.setHardwareAvSync(enabled) }
     }
 
     fun cycleAspect() {
